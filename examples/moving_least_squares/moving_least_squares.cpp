@@ -13,6 +13,8 @@
 
 #include <Kokkos_Core.hpp>
 
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <tuple>
 #include <vector>
@@ -212,12 +214,30 @@ doOne(MPI_Comm comm, ExecutionSpace const &space,
   return tgt_values;
 }
 
+void printToCsv(ExecutionSpace const &space, std::string const &name,
+                Kokkos::View<ArborX::Point *, MemorySpace> const &points,
+                Kokkos::View<float *, MemorySpace> const &values)
+{
+  std::ofstream file{name};
+  auto points_host = Kokkos::create_mirror_view(points);
+  auto values_host = Kokkos::create_mirror_view(values);
+  Kokkos::deep_copy(space, points_host, points);
+  Kokkos::deep_copy(space, values_host, values);
+
+  for (std::size_t i = 0; i < points.extent(0); i++)
+  {
+    auto p = points_host(i);
+    auto v = values_host(i);
+    file << p[0] << ';' << p[1] << ';' << v << '\n';
+  }
+}
+
 int main(int argc, char *argv[])
 {
-  static constexpr std::size_t total_points = 1024 * 128;
-  static constexpr std::size_t num_back_forth = 50;
-  static constexpr auto deg = Details::degree<4>;
-  static constexpr auto rbf = Details::wu<2>;
+  static constexpr std::size_t total_points = 1024 * 4;
+  static constexpr std::size_t num_back_forth = 500;
+  static constexpr auto deg = Details::degree<2>;
+  static constexpr auto rbf = Details::wendland<0>;
 
   MPI_Init(&argc, &argv);
   Kokkos::ScopeGuard guard(argc, argv);
@@ -229,6 +249,12 @@ int main(int argc, char *argv[])
   MPI_Comm_size(mpi_comm, &mpi_size);
   MPI_Comm_rank(mpi_comm, &mpi_rank);
 
+  std::string folder = "./results/4096_deg2_wendland0_mpi" + std::to_string(mpi_size);
+  std::filesystem::create_directories(folder);
+  std::string result_prefix =
+      folder + "/rank" + std::to_string(mpi_rank) + "_turn";
+  std::string result_suffix = ".csv";
+
   auto point_clouds =
       createPointClouds(host_space, space, mpi_comm, total_points / mpi_size);
 
@@ -238,6 +264,9 @@ int main(int argc, char *argv[])
 
   Kokkos::Array<Kokkos::View<float *, MemorySpace>, 2> true_values{
       Step::map(space, point_clouds[0]), Step::map(space, point_clouds[1])};
+
+  printToCsv(space, result_prefix + std::to_string(0) + result_suffix,
+             point_clouds[0], true_values[0]);
 
   Kokkos::View<float *, MemorySpace> source_values = true_values[0];
   for (int i = 0; i < num_back_forth * 2; i++)
@@ -253,6 +282,10 @@ int main(int argc, char *argv[])
 
     source_values =
         doOne(mpi_comm, space, target, source_values, tgt_true_values, mls);
+
+    if ((i + 1) % 10 == 0)
+      printToCsv(space, result_prefix + std::to_string(i + 1) + result_suffix,
+                 target, source_values);
 
     if (mpi_rank == 0)
       std::cout << "===\n" << std::endl;
