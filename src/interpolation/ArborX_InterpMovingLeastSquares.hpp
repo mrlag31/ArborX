@@ -18,51 +18,10 @@
 #include <ArborX_IndexableGetter.hpp>
 #include <ArborX_InterpDetailsCompactRadialBasisFunction.hpp>
 #include <ArborX_InterpDetailsMovingLeastSquaresCoefficients.hpp>
+#include <ArborX_InterpDetailsMovingLeastSquaresPredicates.hpp>
 #include <ArborX_LinearBVH.hpp>
 
 #include <Kokkos_Core.hpp>
-
-namespace ArborX::Interpolation::Details
-{
-
-// This is done to avoid a clash with another predicates access trait
-template <typename Points>
-struct MLSTargetPointsPredicateWrapper
-{
-  Points target_points;
-  int num_neighbors;
-};
-
-} // namespace ArborX::Interpolation::Details
-
-namespace ArborX
-{
-
-template <typename Points>
-struct AccessTraits<
-    Interpolation::Details::MLSTargetPointsPredicateWrapper<Points>,
-    PredicatesTag>
-{
-  KOKKOS_INLINE_FUNCTION static auto size(
-      Interpolation::Details::MLSTargetPointsPredicateWrapper<Points> const &tp)
-  {
-    return AccessTraits<Points, PrimitivesTag>::size(tp.target_points);
-  }
-
-  KOKKOS_INLINE_FUNCTION static auto
-  get(Interpolation::Details::MLSTargetPointsPredicateWrapper<Points> const &tp,
-      int const i)
-  {
-    return nearest(
-        AccessTraits<Points, PrimitivesTag>::get(tp.target_points, i),
-        tp.num_neighbors);
-  }
-
-  using memory_space =
-      typename AccessTraits<Points, PrimitivesTag>::memory_space;
-};
-
-} // namespace ArborX
 
 namespace ArborX::Interpolation
 {
@@ -129,8 +88,8 @@ public:
     bvh source_tree(space, source_points);
 
     // Create the predicates
-    Details::MLSTargetPointsPredicateWrapper<TargetPoints> predicates{
-        target_points, num_neighbors};
+    Details::MLSPointsPredicateWrapper<TargetPoints> predicates{target_points,
+                                                                num_neighbors};
 
     // Query the source
     Kokkos::View<int *, MemorySpace> indices(
