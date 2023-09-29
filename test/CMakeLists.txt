@@ -249,11 +249,14 @@ target_include_directories(ArborX_Test_InterpMovingLeastSquares.exe PRIVATE ${CM
 add_test(NAME ArborX_Test_InterpMovingLeastSquares COMMAND $<TARGET_FILE:ArborX_Test_InterpMovingLeastSquares.exe>)
 
 if(ARBORX_ENABLE_MPI)
-  add_executable(ArborX_Test_InterpDetailsDTPQC.exe tstInterpDetailsDTPQC.cpp utf_main.cpp)
-  target_link_libraries(ArborX_Test_InterpDetailsDTPQC.exe PRIVATE ArborX Boost::unit_test_framework)
-  target_compile_definitions(ArborX_Test_InterpDetailsDTPQC.exe PRIVATE BOOST_TEST_DYN_LINK ARBORX_MPI_UNIT_TEST)
-  target_include_directories(ArborX_Test_InterpDetailsDTPQC.exe PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
-  add_test(NAME ArborX_Test_InterpDetailsDTPQC COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${MPIEXEC_MAX_NUMPROCS} ${MPIEXEC_PREFLAGS} $<TARGET_FILE:ArborX_Test_InterpDetailsDTPQC.exe> ${MPIEXEC_POSTFLAGS})
+  add_executable(ArborX_Test_InterpDistributedMovingLeastSquares.exe
+    tstInterpDetailsDTPQC.cpp
+    tstInterpDistributedMovingLeastSquares
+    utf_main.cpp)
+  target_link_libraries(ArborX_Test_InterpDistributedMovingLeastSquares.exe PRIVATE ArborX Boost::unit_test_framework)
+  target_compile_definitions(ArborX_Test_InterpDistributedMovingLeastSquares.exe PRIVATE BOOST_TEST_DYN_LINK ARBORX_MPI_UNIT_TEST)
+  target_include_directories(ArborX_Test_InterpDistributedMovingLeastSquares.exe PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+  add_test(NAME ArborX_Test_InterpDistributedMovingLeastSquares COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${MPIEXEC_MAX_NUMPROCS} ${MPIEXEC_PREFLAGS} $<TARGET_FILE:ArborX_Test_InterpDistributedMovingLeastSquares.exe> ${MPIEXEC_POSTFLAGS})
 endif()
 
 if(ARBORX_ENABLE_HEADER_SELF_CONTAINMENT_TESTS)

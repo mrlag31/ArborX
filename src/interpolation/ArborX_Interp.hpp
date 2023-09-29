@@ -14,4 +14,8 @@
 
 #include <ArborX_InterpMovingLeastSquares.hpp>
 
+#ifdef ARBORX_ENABLE_MPI
+#include <ArborX_InterpDistributedMovingLeastSquares.hpp>
+#endif
+
 #endif

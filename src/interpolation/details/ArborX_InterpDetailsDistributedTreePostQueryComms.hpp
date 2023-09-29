@@ -168,7 +168,7 @@ public:
   }
 
   template <typename ExecutionSpace, typename Values>
-  void distribute(ExecutionSpace const &space, Values &values)
+  void distribute(ExecutionSpace const &space, Values &values) const
   {
     // Values is a 1D view of values
     static_assert(Kokkos::is_view_v<Values> && Values::rank == 1,
@@ -182,8 +182,8 @@ public:
     using value_t = typename Values::non_const_value_type;
     using memory_space = typename Values::memory_space;
 
-    auto mpi_send_indices = _mpi_send_indices;
-    auto mpi_recv_indices = _mpi_recv_indices;
+    auto const mpi_send_indices = _mpi_send_indices;
+    auto const mpi_recv_indices = _mpi_recv_indices;
 
     // We know what each process want so we prepare the data to be sent
     Kokkos::View<value_t *, memory_space> data_to_send(
@@ -217,6 +217,10 @@ public:
           values(mpi_recv_indices(i)) = data_to_recv(i);
         });
   }
+
+  DistributedTreePostQueryComms()
+      : _distributor(nullptr)
+  {}
 
 private:
   std::shared_ptr<MPI_Comm> _comm;
