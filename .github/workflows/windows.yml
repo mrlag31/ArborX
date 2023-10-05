@@ -12,6 +12,9 @@ jobs:
     runs-on: windows-2022
 
     steps:
+    - name: Check LongPathsEnabled
+      run: |
+           (Get-ItemProperty "HKLM:System\CurrentControlSet\Control\FileSystem").LongPathsEnabled
     - uses: actions/checkout@v3
     - name: Install dependencies via vcpkg
       uses: johnwason/vcpkg-action@v5
