@@ -56,6 +56,8 @@ public:
     static_assert(GeometryTraits::is_point<src_point>::value,
                   "Source points elements must be points");
     static constexpr int dimension = GeometryTraits::dimension_v<src_point>;
+    static_assert(std::is_same_v<src_point, ArborX::Point>,
+                  "FIXME: DistributedTree only handles ArborX::Point");
 
     // TargetPoints is an access trait of points
     ArborX::Details::check_valid_access_traits(PrimitivesTag{}, target_points);
@@ -110,6 +112,26 @@ public:
     Details::movingLeastSquaresCoefficients<CRBF, PolynomialDegree>(
         space, source_view, target_points, _coeffs);
   }
+
+  template <typename ExecutionSpace, typename SourcePoints,
+            typename TargetPoints, typename CRBF, typename PolynomialDegree>
+  DistributedMovingLeastSquares(MPI_Comm comm, ExecutionSpace const &space,
+                                SourcePoints const &source_points,
+                                TargetPoints const &target_points, CRBF,
+                                PolynomialDegree)
+      : DistributedMovingLeastSquares(comm, space, source_points, target_points,
+                                      0, CRBF{}, PolynomialDegree{})
+  {}
+
+  template <typename ExecutionSpace, typename SourcePoints,
+            typename TargetPoints>
+  DistributedMovingLeastSquares(MPI_Comm comm, ExecutionSpace const &space,
+                                SourcePoints const &source_points,
+                                TargetPoints const &target_points)
+      : DistributedMovingLeastSquares(comm, space, source_points, target_points,
+                                      CRBF::Wendland<2>{},
+                                      PolynomialDegree<2>{})
+  {}
 
   template <typename ExecutionSpace, typename SourcePoints>
   Kokkos::View<typename ArborX::Details::AccessTraitsHelper<
