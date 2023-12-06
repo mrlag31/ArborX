@@ -155,7 +155,7 @@ public:
     // Compute the moving least squares coefficients
     _coeffs = Details::movingLeastSquaresCoefficients<
         CRBF, PolynomialDegree, FloatingCalculationType, MemorySpace>(
-        space, source_view, target_points);
+        space, target_points, source_view);
   }
 
   template <typename ExecutionSpace, typename SourcePoints,

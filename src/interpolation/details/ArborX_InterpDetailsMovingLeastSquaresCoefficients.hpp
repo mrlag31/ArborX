@@ -113,8 +113,9 @@ KOKKOS_FUNCTION void movingLeastSquaresCoefficientsKernel(
     Vandermonde &vandermonde, Moment &moment, SVDDiag &svd_diag,
     SVDUnit &svd_unit, Coefficients &coefficients)
 {
-  static constexpr int poly_size = moment.extent_int(0);
-  int const num_neighbor = source_points.extent_int(0);
+  using CoefficientsType = typename Coefficients::non_const_value_type;
+  int const poly_size = moment.extent_int(0);
+  int const num_neighbors = source_points.extent_int(0);
 
   // The goal is to compute the following line vector for each target point:
   // p(x).[P^T.PHI.P]^-1.P^T.PHI
@@ -126,20 +127,20 @@ KOKKOS_FUNCTION void movingLeastSquaresCoefficientsKernel(
 
   // We first change the origin of the evaluation to be at the target point.
   // This lets us use p(0) which is [1 0 ... 0].
-  for (int neighbor = 0; neighbor < num_neighbor; neighbor++)
+  for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
     sourcePointsRecentering(neighbor, source_points, target_point,
                             source_points);
 
   // We then compute the radius for each target that will be used in evaluating
   // the weight for each source point.
-  auto radius = radiusComputation(source_points);
+  auto radius = radiusComputation<CoefficientsType>(source_points);
 
   // This computes PHI given the source points as well as the radius
-  for (int neighbor = 0; neighbor < num_neighbor; neighbor++)
+  for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
     phiComputation<CRBF>(neighbor, source_points, radius, phi);
 
   // This builds the Vandermonde (P) matrix
-  for (int neighbor = 0; neighbor < num_neighbor; neighbor++)
+  for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
     vandermondeComputation<PolynomialDegree>(neighbor, source_points,
                                              vandermonde);
 
@@ -155,200 +156,80 @@ KOKKOS_FUNCTION void movingLeastSquaresCoefficientsKernel(
   // Now, the moment has [P^T.PHI.P]^-1
 
   // Finally, the result is produced by computing p(0).[P^T.PHI.P]^-1.P^T.PHI
-  for (int neighbor = 0; neighbor < num_neighbor; neighbor++)
+  for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
     coefficientsComputation(neighbor, phi, vandermonde, moment, coefficients);
 }
 
 template <typename CRBF, typename PolynomialDegree, typename CoefficientsType,
-          typename MemorySpace, typename ExecutionSpace, typename SourcePoints,
-          typename TargetPoints>
+          typename MemorySpace, typename ExecutionSpace, typename TargetPoints,
+          typename SourcePoints>
 Kokkos::View<CoefficientsType **, MemorySpace>
 movingLeastSquaresCoefficients(ExecutionSpace const &space,
-                               SourcePoints const &source_points,
-                               TargetPoints const &target_points)
+                               TargetPoints const &target_points,
+                               SourcePoints &source_points)
 {
   KokkosExt::ScopedProfileRegion guard(
       "ArborX::MovingLeastSquaresCoefficients");
 
-  static_assert(
-      KokkosExt::is_accessible_from<MemorySpace, ExecutionSpace>::value,
-      "Memory space must be accessible from the execution space");
-
-  // SourcePoints is a 2D view of points
-  static_assert(Kokkos::is_view_v<SourcePoints> && SourcePoints::rank == 2,
-                "source points must be a 2D view of points");
-  static_assert(
-      KokkosExt::is_accessible_from<typename SourcePoints::memory_space,
-                                    ExecutionSpace>::value,
-      "source points must be accessible from the execution space");
-  using src_point = typename SourcePoints::non_const_value_type;
-  GeometryTraits::check_valid_geometry_traits(src_point{});
-  static_assert(GeometryTraits::is_point<src_point>::value,
-                "source points elements must be points");
-  static constexpr int dimension = GeometryTraits::dimension_v<src_point>;
-
-  // TargetPoints is an access trait of points
-  ArborX::Details::check_valid_access_traits(PrimitivesTag{}, target_points);
   using tgt_acc = AccessTraits<TargetPoints, PrimitivesTag>;
-  static_assert(KokkosExt::is_accessible_from<typename tgt_acc::memory_space,
-                                              ExecutionSpace>::value,
-                "target points must be accessible from the execution space");
   using tgt_point = typename ArborX::Details::AccessTraitsHelper<tgt_acc>::type;
-  GeometryTraits::check_valid_geometry_traits(tgt_point{});
-  static_assert(GeometryTraits::is_point<tgt_point>::value,
-                "target points elements must be points");
-  static_assert(dimension == GeometryTraits::dimension_v<tgt_point>,
-                "target and source points must have the same dimension");
-
-  int const num_targets = tgt_acc::size(target_points);
-  int const num_neighbors = source_points.extent(1);
-
-  // There must be a set of neighbors for each target
-  KOKKOS_ASSERT(num_targets == source_points.extent_int(0));
-
-  using point_t = ExperimentalHyperGeometry::Point<dimension, CoefficientsType>;
+  int const num_targets = source_points.extent_int(0);
+  int const num_neighbors = source_points.extent_int(1);
+  static constexpr int dimension = GeometryTraits::dimension_v<tgt_point>;
   static constexpr int degree = PolynomialDegree::value;
   static constexpr int poly_size = polynomialBasisSize<dimension, degree>();
 
-  Kokkos::Profiling::pushRegion(
-      "ArborX::MovingLeastSquaresCoefficients::source_ref_target_fill");
-
-  // We first change the origin of the evaluation to be at the target point.
-  // This lets us use p(0) which is [1 0 ... 0].
-  Kokkos::View<point_t **, MemorySpace> source_ref_target(
-      Kokkos::view_alloc(
-          space, Kokkos::WithoutInitializing,
-          "ArborX::MovingLeastSquaresCoefficients::source_ref_target"),
-      num_targets, num_neighbors);
-  Kokkos::parallel_for(
-      "ArborX::MovingLeastSquaresCoefficients::source_ref_target_fill",
-      Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<2>>(
-          space, {0, 0}, {num_targets, num_neighbors}),
-      KOKKOS_LAMBDA(int const i, int const j) {
-        auto local_source_points =
-            Kokkos::subview(source_points, i, Kokkos::ALL);
-        auto centered_source_points =
-            Kokkos::subview(source_ref_target, i, Kokkos::ALL);
-        auto target_point = tgt_acc::get(target_points, i);
-        sourcePointsRecentering(j, local_source_points, target_point,
-                                centered_source_points);
-      });
-
-  Kokkos::Profiling::popRegion();
-  Kokkos::Profiling::pushRegion(
-      "ArborX::MovingLeastSquaresCoefficients::radii_computation");
-
-  // We then compute the radius for each target that will be used in evaluating
-  // the weight for each source point.
-  Kokkos::View<CoefficientsType *, MemorySpace> radii(
-      Kokkos::view_alloc(space, Kokkos::WithoutInitializing,
-                         "ArborX::MovingLeastSquaresCoefficients::radii"),
-      num_targets);
-  Kokkos::parallel_for(
-      "ArborX::MovingLeastSquaresCoefficients::radii_computation",
-      Kokkos::RangePolicy<ExecutionSpace>(space, 0, num_targets),
-      KOKKOS_LAMBDA(int const i) {
-        auto local_source_points =
-            Kokkos::subview(source_ref_target, i, Kokkos::ALL);
-        radii(i) = radiusComputation<CoefficientsType>(local_source_points);
-      });
-
-  Kokkos::Profiling::popRegion();
-  Kokkos::Profiling::pushRegion(
-      "ArborX::MovingLeastSquaresCoefficients::phi_computation");
-
-  // This computes PHI given the source points as well as the radius
   Kokkos::View<CoefficientsType **, MemorySpace> phi(
       Kokkos::view_alloc(space, Kokkos::WithoutInitializing,
                          "ArborX::MovingLeastSquaresCoefficients::phi"),
       num_targets, num_neighbors);
-  Kokkos::parallel_for(
-      "ArborX::MovingLeastSquaresCoefficients::phi_computation",
-      Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<2>>(
-          space, {0, 0}, {num_targets, num_neighbors}),
-      KOKKOS_LAMBDA(int const i, int const j) {
-        auto local_source_points =
-            Kokkos::subview(source_ref_target, i, Kokkos::ALL);
-        auto radius = radii(i);
-        auto local_phi = Kokkos::subview(phi, i, Kokkos::ALL);
-        phiComputation<CRBF>(j, local_source_points, radius, local_phi);
-      });
-
-  Kokkos::Profiling::popRegion();
-  Kokkos::Profiling::pushRegion(
-      "ArborX::MovingLeastSquaresCoefficients::vandermonde");
-
-  // This builds the Vandermonde (P) matrix
-  Kokkos::View<CoefficientsType ***, MemorySpace> p(
+  Kokkos::View<CoefficientsType ***, MemorySpace> vandermonde(
       Kokkos::view_alloc(space, Kokkos::WithoutInitializing,
                          "ArborX::MovingLeastSquaresCoefficients::vandermonde"),
       num_targets, num_neighbors, poly_size);
-  Kokkos::parallel_for(
-      "ArborX::MovingLeastSquaresCoefficients::vandermonde_computation",
-      Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<2>>(
-          space, {0, 0}, {num_targets, num_neighbors}),
-      KOKKOS_LAMBDA(int const i, int const j) {
-        auto local_source_points =
-            Kokkos::subview(source_ref_target, i, Kokkos::ALL);
-        auto local_p = Kokkos::subview(p, i, Kokkos::ALL, Kokkos::ALL);
-        vandermondeComputation<PolynomialDegree>(j, local_source_points,
-                                                 local_p);
-      });
-
-  Kokkos::Profiling::popRegion();
-  Kokkos::Profiling::pushRegion(
-      "ArborX::MovingLeastSquaresCoefficients::moment");
-
-  // We then create what is called the moment matrix, which is A = P^T.PHI.P. By
-  // construction, A is symmetric.
-  Kokkos::View<CoefficientsType ***, MemorySpace> a(
+  Kokkos::View<CoefficientsType ***, MemorySpace> moment(
       Kokkos::view_alloc(space, Kokkos::WithoutInitializing,
                          "ArborX::MovingLeastSquaresCoefficients::moment"),
       num_targets, poly_size, poly_size);
-  Kokkos::parallel_for(
-      "ArborX::MovingLeastSquaresCoefficients::moment_computation",
-      Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<3>>(
-          space, {0, 0, 0}, {num_targets, poly_size, poly_size}),
-      KOKKOS_LAMBDA(int const i, int const j, int const k) {
-        auto local_phi = Kokkos::subview(phi, i, Kokkos::ALL);
-        auto local_p = Kokkos::subview(p, i, Kokkos::ALL, Kokkos::ALL);
-        auto local_a = Kokkos::subview(a, i, Kokkos::ALL, Kokkos::ALL);
-        momentComputation(j, k, local_phi, local_p, local_a);
-      });
-
-  Kokkos::Profiling::popRegion();
-  Kokkos::Profiling::pushRegion(
-      "ArborX::MovingLeastSquaresCoefficients::pseudo_inverse_svd");
-
-  // We need the inverse of A = P^T.PHI.P, and because A is symmetric, we can
-  // use the symmetric SVD algorithm to get it.
-  symmetricPseudoInverseSVD(space, a);
-  // Now, A = [P^T.PHI.P]^-1
-
-  Kokkos::Profiling::popRegion();
-  Kokkos::Profiling::pushRegion(
-      "ArborX::MovingLeastSquaresCoefficients::coefficients_computation");
-
-  // Finally, the result is produced by computing p(0).A.P^T.PHI
-  Kokkos::View<CoefficientsType **, MemorySpace> coeffs(
+  Kokkos::View<CoefficientsType ***, MemorySpace> svd_diag(
+      Kokkos::view_alloc(space, Kokkos::WithoutInitializing,
+                         "ArborX::MovingLeastSquaresCoefficients::svd_diag"),
+      num_targets, poly_size, poly_size);
+  Kokkos::View<CoefficientsType ***, MemorySpace> svd_unit(
+      Kokkos::view_alloc(space, Kokkos::WithoutInitializing,
+                         "ArborX::MovingLeastSquaresCoefficients::svd_unit"),
+      num_targets, poly_size, poly_size);
+  Kokkos::View<CoefficientsType **, MemorySpace> coefficients(
       Kokkos::view_alloc(
           space, Kokkos::WithoutInitializing,
           "ArborX::MovingLeastSquaresCoefficients::coefficients"),
       num_targets, num_neighbors);
+
   Kokkos::parallel_for(
-      "ArborX::MovingLeastSquaresCoefficients::coefficients_computation",
-      Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<2>>(
-          space, {0, 0}, {num_targets, num_neighbors}),
-      KOKKOS_LAMBDA(int const i, int const j) {
-        auto local_phi = Kokkos::subview(phi, i, Kokkos::ALL);
-        auto local_p = Kokkos::subview(p, i, Kokkos::ALL, Kokkos::ALL);
-        auto local_a = Kokkos::subview(a, i, Kokkos::ALL, Kokkos::ALL);
-        auto local_coeffs = Kokkos::subview(coeffs, i, Kokkos::ALL);
-        coefficientsComputation(j, local_phi, local_p, local_a, local_coeffs);
+      "ArborX::MovingLeastSquaresCoefficients::operation",
+      Kokkos::RangePolicy<ExecutionSpace>(space, 0, num_targets),
+      KOKKOS_LAMBDA(int const target) {
+        auto target_point = tgt_acc::get(target_points, target);
+        auto local_source_points =
+            Kokkos::subview(source_points, target, Kokkos::ALL);
+        auto local_phi = Kokkos::subview(phi, target, Kokkos::ALL);
+        auto local_vandermonde =
+            Kokkos::subview(vandermonde, target, Kokkos::ALL, Kokkos::ALL);
+        auto local_moment =
+            Kokkos::subview(moment, target, Kokkos::ALL, Kokkos::ALL);
+        auto local_svd_diag =
+            Kokkos::subview(svd_diag, target, Kokkos::ALL, Kokkos::ALL);
+        auto local_svd_unit =
+            Kokkos::subview(svd_unit, target, Kokkos::ALL, Kokkos::ALL);
+        auto local_coefficients =
+            Kokkos::subview(coefficients, target, Kokkos::ALL);
+
+        movingLeastSquaresCoefficientsKernel<CRBF, PolynomialDegree>(
+            target_point, local_source_points, local_phi, local_vandermonde,
+            local_moment, local_svd_diag, local_svd_unit, local_coefficients);
       });
 
-  Kokkos::Profiling::popRegion();
-  return coeffs;
+  return coefficients;
 }
 
 } // namespace ArborX::Interpolation::Details
