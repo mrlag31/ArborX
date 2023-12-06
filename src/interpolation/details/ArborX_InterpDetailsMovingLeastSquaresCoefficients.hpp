@@ -113,7 +113,7 @@ KOKKOS_FUNCTION void movingLeastSquaresCoefficientsKernel(
     Vandermonde &vandermonde, Moment &moment, SVDDiag &svd_diag,
     SVDUnit &svd_unit, Coefficients &coefficients)
 {
-  using CoefficientsType = typename Coefficients::non_const_value_type;
+  using coefficients_t = typename Coefficients::non_const_value_type;
   int const poly_size = moment.extent_int(0);
   int const num_neighbors = source_points.extent_int(0);
 
@@ -133,7 +133,7 @@ KOKKOS_FUNCTION void movingLeastSquaresCoefficientsKernel(
 
   // We then compute the radius for each target that will be used in evaluating
   // the weight for each source point.
-  auto radius = radiusComputation<CoefficientsType>(source_points);
+  auto radius = radiusComputation<coefficients_t>(source_points);
 
   // This computes PHI given the source points as well as the radius
   for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
@@ -152,7 +152,7 @@ KOKKOS_FUNCTION void movingLeastSquaresCoefficientsKernel(
 
   // We need the inverse of P^T.PHI.P, and because it is symmetric, we can use
   // the symmetric SVD algorithm to get it.
-  symmetricPseudoInverseSVDSerialKernel(moment, svd_diag, svd_unit);
+  symmetricPseudoInverseSVDKernel(moment, svd_diag, svd_unit);
   // Now, the moment has [P^T.PHI.P]^-1
 
   // Finally, the result is produced by computing p(0).[P^T.PHI.P]^-1.P^T.PHI

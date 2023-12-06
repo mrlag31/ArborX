@@ -26,6 +26,8 @@ void makeCase(ES const &es, V const (&src_arr)[M][N][N],
   host_view src("Testing::src");
   host_view ref("Testing::ref");
   device_view inv("Testing::inv");
+  device_view svd_diag("Testing::svd_diag");
+  device_view svd_unit("Testing::svd_unit");
 
   for (int i = 0; i < M; i++)
     for (int j = 0; j < N; j++)
@@ -36,7 +38,19 @@ void makeCase(ES const &es, V const (&src_arr)[M][N][N],
       }
 
   Kokkos::deep_copy(es, inv, src);
-  ArborX::Interpolation::Details::symmetricPseudoInverseSVD(es, inv);
+
+  Kokkos::parallel_for(
+      "Testing::SVD", Kokkos::RangePolicy<ES>(es, 0, M),
+      KOKKOS_LAMBDA(int const i) {
+        auto local_inv = Kokkos::subview(inv, i, Kokkos::ALL, Kokkos::ALL);
+        auto local_svd_diag =
+            Kokkos::subview(svd_diag, i, Kokkos::ALL, Kokkos::ALL);
+        auto local_svd_unit =
+            Kokkos::subview(svd_unit, i, Kokkos::ALL, Kokkos::ALL);
+        ArborX::Interpolation::Details::symmetricPseudoInverseSVDKernel(
+            local_inv, local_svd_diag, local_svd_unit);
+      });
+
   ARBORX_MDVIEW_TEST_TOL(ref, inv, Kokkos::Experimental::epsilon_v<float>);
 }
 
@@ -122,7 +136,12 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(pseudo_inv_empty, DeviceType, ARBORX_DEVICE_TYPES)
   using MemorySpace = typename DeviceType::memory_space;
   ExecutionSpace space{};
 
-  Kokkos::View<double ***, MemorySpace> mat("mat", 0, 0, 0);
-  ArborX::Interpolation::Details::symmetricPseudoInverseSVD(space, mat);
+  Kokkos::View<double **, MemorySpace> mat("mat", 0, 0);
+  Kokkos::parallel_for(
+      "Testing::SVD", Kokkos::RangePolicy<ExecutionSpace>(space, 0, 1),
+      KOKKOS_LAMBDA(int const) {
+        ArborX::Interpolation::Details::symmetricPseudoInverseSVDKernel(
+            mat, mat, mat);
+      });
   BOOST_TEST(mat.size() == 0);
 }
