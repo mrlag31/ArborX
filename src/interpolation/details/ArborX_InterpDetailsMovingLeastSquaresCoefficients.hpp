@@ -46,6 +46,24 @@ sourcePointsRecentering(int const neighbor, SourcePoints const &source_points,
   centered_source_points(neighbor) = source_point;
 }
 
+template <typename SourcePoints, typename Radius>
+KOKKOS_FUNCTION void radiusComputation(SourcePoints const &source_points,
+                                       Radius &radius)
+{
+  // SourcePoints must be a 1D view of points
+  static constexpr typename SourcePoints::value_type origin = {};
+
+  radius = Kokkos::Experimental::epsilon_v<Radius>;
+  for (int neighbor = 0; neighbor < source_points.extent_int(0); neighbor++)
+  {
+    Radius norm = ArborX::Details::distance(source_points(neighbor), origin);
+    radius = Kokkos::max(radius, norm);
+  }
+
+  // The one at the limit would be valued at 0 due to how CRBFs work
+  radius *= 1.1;
+}
+
 template <typename CRBF, typename PolynomialDegree, typename CoefficientsType,
           typename MemorySpace, typename ExecutionSpace, typename SourcePoints,
           typename TargetPoints>
@@ -94,8 +112,6 @@ movingLeastSquaresCoefficients(ExecutionSpace const &space,
   KOKKOS_ASSERT(num_targets == source_points.extent_int(0));
 
   using point_t = ExperimentalHyperGeometry::Point<dimension, CoefficientsType>;
-  static constexpr auto epsilon =
-      Kokkos::Experimental::epsilon_v<CoefficientsType>;
   static constexpr int degree = PolynomialDegree::value;
   static constexpr int poly_size = polynomialBasisSize<dimension, degree>();
 
@@ -145,17 +161,10 @@ movingLeastSquaresCoefficients(ExecutionSpace const &space,
       "ArborX::MovingLeastSquaresCoefficients::radii_computation",
       Kokkos::RangePolicy<ExecutionSpace>(space, 0, num_targets),
       KOKKOS_LAMBDA(int const i) {
-        CoefficientsType radius = epsilon;
-
-        for (int j = 0; j < num_neighbors; j++)
-        {
-          CoefficientsType norm =
-              ArborX::Details::distance(source_ref_target(i, j), point_t{});
-          radius = Kokkos::max(radius, norm);
-        }
-
-        // The one at the limit would be valued at 0 due to how CRBFs work
-        radii(i) = 1.1 * radius;
+        auto local_source_points =
+            Kokkos::subview(source_ref_target, i, Kokkos::ALL);
+        auto &radius = radii(i);
+        radiusComputation(local_source_points, radius);
       });
 
   Kokkos::Profiling::popRegion();
