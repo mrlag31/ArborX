@@ -25,6 +25,27 @@
 namespace ArborX::Interpolation::Details
 {
 
+template <typename SourcePoints, typename CenteredSourcePoints,
+          typename TargetPoint>
+KOKKOS_FUNCTION void
+sourcePointsRecentering(int const neighbor, SourcePoints const &source_points,
+                        CenteredSourcePoints &centered_source_points,
+                        TargetPoint const &target_point)
+{
+  // SourcePoints must be a 1D view of points
+  // CenteredSourcePoints must be a 1D view of points (same size as
+  // SourcePoints)
+  // TargetPoint is a point
+  // all point dimensions must be the same
+  static constexpr int dimension =
+      GeometryTraits::dimension_v<typename SourcePoints::value_type>;
+
+  auto source_point = source_points(neighbor);
+  for (int k = 0; k < dimension; k++)
+    source_point[k] -= target_point[k];
+  centered_source_points(neighbor) = source_point;
+}
+
 template <typename CRBF, typename PolynomialDegree, typename CoefficientsType,
           typename MemorySpace, typename ExecutionSpace, typename SourcePoints,
           typename TargetPoints>
@@ -101,14 +122,13 @@ movingLeastSquaresCoefficients(ExecutionSpace const &space,
       Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<2>>(
           space, {0, 0}, {num_targets, num_neighbors}),
       KOKKOS_LAMBDA(int const i, int const j) {
-        auto src = source_points(i, j);
-        auto tgt = tgt_acc::get(target_points, i);
-        point_t t{};
-
-        for (int k = 0; k < dimension; k++)
-          t[k] = src[k] - tgt[k];
-
-        source_ref_target(i, j) = t;
+        auto local_source_points =
+            Kokkos::subview(source_points, i, Kokkos::ALL);
+        auto centered_source_points =
+            Kokkos::subview(source_ref_target, i, Kokkos::ALL);
+        auto target_point = tgt_acc::get(target_points, i);
+        sourcePointsRecentering(j, local_source_points, centered_source_points,
+                                target_point);
       });
 
   Kokkos::Profiling::popRegion();
