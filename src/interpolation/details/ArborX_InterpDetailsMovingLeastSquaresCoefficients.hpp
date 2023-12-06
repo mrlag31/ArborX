@@ -46,22 +46,35 @@ sourcePointsRecentering(int const neighbor, SourcePoints const &source_points,
   centered_source_points(neighbor) = source_point;
 }
 
-template <typename SourcePoints, typename Radius>
+template <typename SourcePoints, typename WorkType>
 KOKKOS_FUNCTION void radiusComputation(SourcePoints const &source_points,
-                                       Radius &radius)
+                                       WorkType &radius)
 {
   // SourcePoints must be a 1D view of points
   static constexpr typename SourcePoints::value_type origin = {};
 
-  radius = Kokkos::Experimental::epsilon_v<Radius>;
+  radius = Kokkos::Experimental::epsilon_v<WorkType>;
   for (int neighbor = 0; neighbor < source_points.extent_int(0); neighbor++)
   {
-    Radius norm = ArborX::Details::distance(source_points(neighbor), origin);
+    WorkType norm = ArborX::Details::distance(source_points(neighbor), origin);
     radius = Kokkos::max(radius, norm);
   }
 
   // The one at the limit would be valued at 0 due to how CRBFs work
   radius *= 1.1;
+}
+
+template <typename CRBF, typename SourcePoints, typename WorkType, typename Phi>
+KOKKOS_FUNCTION void phiComputation(int const neighbor,
+                                    SourcePoints const &source_points,
+                                    WorkType const radius, Phi &phi)
+{
+  // SourcePoints must be a 1D view of points
+  // Phi must be a 1D view of values (same size as SourcePoints)
+  static constexpr typename SourcePoints::value_type origin = {};
+
+  WorkType norm = ArborX::Details::distance(source_points(neighbor), origin);
+  phi(neighbor) = CRBF::evaluate(norm / radius);
 }
 
 template <typename CRBF, typename PolynomialDegree, typename CoefficientsType,
@@ -181,9 +194,12 @@ movingLeastSquaresCoefficients(ExecutionSpace const &space,
       Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<2>>(
           space, {0, 0}, {num_targets, num_neighbors}),
       KOKKOS_LAMBDA(int const i, int const j) {
-        CoefficientsType norm =
-            ArborX::Details::distance(source_ref_target(i, j), point_t{});
-        phi(i, j) = CRBF::evaluate(norm / radii(i));
+        auto local_source_points =
+            Kokkos::subview(source_ref_target, i, Kokkos::ALL);
+        auto radius = radii(i);
+        auto local_phi =
+            Kokkos::subview(phi, i, Kokkos::ALL);
+        phiComputation<CRBF>(j, local_source_points, radius, local_phi);
       });
 
   Kokkos::Profiling::popRegion();
