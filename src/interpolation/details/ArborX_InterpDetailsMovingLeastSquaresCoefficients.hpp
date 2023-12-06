@@ -59,9 +59,7 @@ KOKKOS_FUNCTION void radiusComputation(SourcePoints const &source_points,
     WorkType norm = ArborX::Details::distance(source_points(neighbor), origin);
     radius = Kokkos::max(radius, norm);
   }
-
-  // The one at the limit would be valued at 0 due to how CRBFs work
-  radius *= 1.1;
+  radius *= 1.1; // The one at the limit would be 0 due to how CRBFs work
 }
 
 template <typename CRBF, typename SourcePoints, typename WorkType, typename Phi>
@@ -85,15 +83,29 @@ KOKKOS_FUNCTION void vandermondeComputation(int const neighbor,
 {
   // SourcePoints must be a 1D view of points
   // Vandermonde must be a 2D view of values (neighbors x poly basis size)
-  static constexpr int dimension =
-      GeometryTraits::dimension_v<typename SourcePoints::value_type>;
   static constexpr int degree = PolynomialDegree::value;
-  static constexpr int poly_size = polynomialBasisSize<dimension, degree>();
 
   auto local_vandermonde = Kokkos::subview(vandermonde, neighbor, Kokkos::ALL);
   auto basis = evaluatePolynomialBasis<degree>(source_points(neighbor));
-  for (int k = 0; k < poly_size; k++)
+  for (int k = 0; k < int(basis.size()); k++)
     local_vandermonde(k) = basis[k];
+}
+
+template <typename Phi, typename Vandermonde, typename Moment>
+KOKKOS_FUNCTION void momentComputation(int const i, int const j, Phi const &phi,
+                                       Vandermonde const &vandermonde,
+                                       Moment &moment)
+{
+  // Phi must be a 1D view of values
+  // Vandermonde must be a 2D view of values (num lines == size of Phi)
+  // Moment must be a 2D view of values (num lines == num cols == num vols
+  // Vandermonde)
+
+  moment(i, j) = 0;
+  for (int k = 0; k < phi.extent_int(0); k++)
+  {
+    moment(i, j) += vandermonde(k, i) * vandermonde(k, j) * phi(k);
+  }
 }
 
 template <typename CRBF, typename PolynomialDegree, typename CoefficientsType,
@@ -256,10 +268,10 @@ movingLeastSquaresCoefficients(ExecutionSpace const &space,
       Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<3>>(
           space, {0, 0, 0}, {num_targets, poly_size, poly_size}),
       KOKKOS_LAMBDA(int const i, int const j, int const k) {
-        CoefficientsType tmp = 0;
-        for (int l = 0; l < num_neighbors; l++)
-          tmp += p(i, l, j) * p(i, l, k) * phi(i, l);
-        a(i, j, k) = tmp;
+        auto local_phi = Kokkos::subview(phi, i, Kokkos::ALL);
+        auto local_p = Kokkos::subview(p, i, Kokkos::ALL, Kokkos::ALL);
+        auto local_a = Kokkos::subview(a, i, Kokkos::ALL, Kokkos::ALL);
+        momentComputation(j, k, local_phi, local_p, local_a);
       });
 
   Kokkos::Profiling::popRegion();
