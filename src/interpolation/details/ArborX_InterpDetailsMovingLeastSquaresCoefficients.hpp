@@ -87,7 +87,7 @@ KOKKOS_FUNCTION void vandermondeComputation(int const neighbor,
 
   auto local_vandermonde = Kokkos::subview(vandermonde, neighbor, Kokkos::ALL);
   auto basis = evaluatePolynomialBasis<degree>(source_points(neighbor));
-  for (int k = 0; k < int(basis.size()); k++)
+  for (int k = 0; k < local_vandermonde.extent_int(0); k++)
     local_vandermonde(k) = basis[k];
 }
 
@@ -103,9 +103,25 @@ KOKKOS_FUNCTION void momentComputation(int const i, int const j, Phi const &phi,
 
   moment(i, j) = 0;
   for (int k = 0; k < phi.extent_int(0); k++)
-  {
     moment(i, j) += vandermonde(k, i) * vandermonde(k, j) * phi(k);
-  }
+}
+
+template <typename Phi, typename Vandermonde, typename MomentInverse,
+          typename Coefficients>
+KOKKOS_FUNCTION void coefficientsComputation(
+    int const neighbor, Phi const &phi, Vandermonde const &vandermonde,
+    MomentInverse const &moment_inverse, Coefficients &coefficients)
+{
+  // Phi must be a 1D view of values
+  // Vandermonde must be a 2D view of values (num lines == size of Phi)
+  // MomentInverse must be a 2D view of values (num lines == num cols == num
+  // vols Vandermonde)
+  // Coefficients must be a 1D view of values (like Phi)
+
+  coefficients(neighbor) = 0;
+  for (int i = 0; i < vandermonde.extent_int(1); i++)
+    coefficients(neighbor) +=
+        moment_inverse(0, i) * vandermonde(neighbor, i) * phi(neighbor);
 }
 
 template <typename CRBF, typename PolynomialDegree, typename CoefficientsType,
@@ -298,10 +314,11 @@ movingLeastSquaresCoefficients(ExecutionSpace const &space,
       Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<2>>(
           space, {0, 0}, {num_targets, num_neighbors}),
       KOKKOS_LAMBDA(int const i, int const j) {
-        CoefficientsType tmp = 0;
-        for (int k = 0; k < poly_size; k++)
-          tmp += a(i, 0, k) * p(i, j, k) * phi(i, j);
-        coeffs(i, j) = tmp;
+        auto local_phi = Kokkos::subview(phi, i, Kokkos::ALL);
+        auto local_p = Kokkos::subview(p, i, Kokkos::ALL, Kokkos::ALL);
+        auto local_a = Kokkos::subview(a, i, Kokkos::ALL, Kokkos::ALL);
+        auto local_coeffs = Kokkos::subview(coeffs, i, Kokkos::ALL);
+        coefficientsComputation(j, local_phi, local_p, local_a, local_coeffs);
       });
 
   Kokkos::Profiling::popRegion();
