@@ -77,6 +77,25 @@ KOKKOS_FUNCTION void phiComputation(int const neighbor,
   phi(neighbor) = CRBF::evaluate(norm / radius);
 }
 
+template <typename PolynomialDegree, typename SourcePoints,
+          typename Vandermonde>
+KOKKOS_FUNCTION void vandermondeComputation(int const neighbor,
+                                            SourcePoints const &source_points,
+                                            Vandermonde &vandermonde)
+{
+  // SourcePoints must be a 1D view of points
+  // Vandermonde must be a 2D view of values (neighbors x poly basis size)
+  static constexpr int dimension =
+      GeometryTraits::dimension_v<typename SourcePoints::value_type>;
+  static constexpr int degree = PolynomialDegree::value;
+  static constexpr int poly_size = polynomialBasisSize<dimension, degree>();
+
+  auto local_vandermonde = Kokkos::subview(vandermonde, neighbor, Kokkos::ALL);
+  auto basis = evaluatePolynomialBasis<degree>(source_points(neighbor));
+  for (int k = 0; k < poly_size; k++)
+    local_vandermonde(k) = basis[k];
+}
+
 template <typename CRBF, typename PolynomialDegree, typename CoefficientsType,
           typename MemorySpace, typename ExecutionSpace, typename SourcePoints,
           typename TargetPoints>
@@ -197,8 +216,7 @@ movingLeastSquaresCoefficients(ExecutionSpace const &space,
         auto local_source_points =
             Kokkos::subview(source_ref_target, i, Kokkos::ALL);
         auto radius = radii(i);
-        auto local_phi =
-            Kokkos::subview(phi, i, Kokkos::ALL);
+        auto local_phi = Kokkos::subview(phi, i, Kokkos::ALL);
         phiComputation<CRBF>(j, local_source_points, radius, local_phi);
       });
 
@@ -216,9 +234,11 @@ movingLeastSquaresCoefficients(ExecutionSpace const &space,
       Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<2>>(
           space, {0, 0}, {num_targets, num_neighbors}),
       KOKKOS_LAMBDA(int const i, int const j) {
-        auto basis = evaluatePolynomialBasis<degree>(source_ref_target(i, j));
-        for (int k = 0; k < poly_size; k++)
-          p(i, j, k) = basis[k];
+        auto local_source_points =
+            Kokkos::subview(source_ref_target, i, Kokkos::ALL);
+        auto local_p = Kokkos::subview(p, i, Kokkos::ALL, Kokkos::ALL);
+        vandermondeComputation<PolynomialDegree>(j, local_source_points,
+                                                 local_p);
       });
 
   Kokkos::Profiling::popRegion();
