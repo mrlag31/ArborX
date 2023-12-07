@@ -157,7 +157,6 @@ public:
     val += Moment::shmem_size(team_size, POLY_SIZE, POLY_SIZE);
     val += SVDDiag::shmem_size(team_size, POLY_SIZE, POLY_SIZE);
     val += SVDUnit::shmem_size(team_size, POLY_SIZE, POLY_SIZE);
-    printf("%d, %ld\n", team_size, val);
     return val;
   }
 
