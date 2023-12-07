@@ -70,15 +70,14 @@ public:
                                        SourcePoints &source_points)
       : _target_points(target_points)
       , _source_points(source_points)
+      , _num_targets(source_points.extent_int(0))
       , _num_neighbors(source_points.extent_int(1))
   {
-    int const num_targets = source_points.extent_int(0);
-
     _coefficients = Coefficients(
         Kokkos::view_alloc(
             space, Kokkos::WithoutInitializing,
             "ArborX::MovingLeastSquaresCoefficientsKernel::coefficients"),
-        num_targets, _num_neighbors);
+        _num_targets, _num_neighbors);
   }
 
 private:
@@ -148,7 +147,6 @@ private:
   }
 
 public:
-  KOKKOS_FUNCTION auto size() const { return _source_points.extent(0); }
   auto coefficients() const { return _coefficients; }
 
   std::size_t team_shmem_size(int const team_size) const
@@ -166,9 +164,8 @@ public:
   template <typename TeamMember>
   KOKKOS_FUNCTION void operator()(TeamMember member) const
   {
-    int const target =
-        member.league_rank() * member.team_size() + member.team_rank();
-    if (target >= int(size()))
+    int target = member.league_rank() * member.team_size() + member.team_rank();
+    if (target >= _num_targets)
       return;
 
     Phi team_phi(member.team_scratch(0), member.team_size(), _num_neighbors);
@@ -242,8 +239,8 @@ public:
     Kokkos::TeamPolicy<ExecutionSpace> policy(space, 1, Kokkos::AUTO);
     int team_rec =
         policy.team_size_recommended(*this, Kokkos::ParallelForTag{});
-    int div = size() / team_rec;
-    int mod = size() % team_rec;
+    int div = _num_targets / team_rec;
+    int mod = _num_targets % team_rec;
     int league_rec = div + ((mod == 0) ? 0 : 1);
     return Kokkos::TeamPolicy<ExecutionSpace>(space, league_rec, team_rec);
   }
@@ -252,6 +249,7 @@ private:
   TargetPoints _target_points;
   SourcePoints _source_points;
   Coefficients _coefficients;
+  int _num_targets;
   int _num_neighbors;
 };
 
