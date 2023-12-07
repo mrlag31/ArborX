@@ -25,135 +25,228 @@
 namespace ArborX::Interpolation::Details
 {
 
-template <typename TargetPoint, typename SourcePoints>
-KOKKOS_FUNCTION void sourcePointsRecentering(int const neighbor,
-                                             TargetPoint const &target_point,
-                                             SourcePoints &source_points)
+template <typename CRBF, typename PolynomialDegree, typename CoefficientsType,
+          typename MemorySpace, typename TargetPoints, typename SourcePoints>
+class MovingLeastSquaresCoefficientsKernel
 {
-  static constexpr int dimension =
-      GeometryTraits::dimension_v<typename SourcePoints::value_type>;
+private:
+  using Phi = Kokkos::View<CoefficientsType **, MemorySpace>;
+  using Vandermonde = Kokkos::View<CoefficientsType ***, MemorySpace>;
+  using Moment = Kokkos::View<CoefficientsType ***, MemorySpace>;
+  using SVDDiag = Kokkos::View<CoefficientsType ***, MemorySpace>;
+  using SVDUnit = Kokkos::View<CoefficientsType ***, MemorySpace>;
+  using Coefficients = Kokkos::View<CoefficientsType **, MemorySpace>;
 
-  for (int k = 0; k < dimension; k++)
-    source_points(neighbor)[k] -= target_point[k];
-}
+  using SourcePoint = typename SourcePoints::non_const_value_type;
+  using TargetAccess = AccessTraits<TargetPoints, PrimitivesTag>;
+  using TargetPoint =
+      typename ArborX::Details::AccessTraitsHelper<TargetAccess>::type;
 
-template <typename WorkType, typename SourcePoints>
-KOKKOS_FUNCTION WorkType radiusComputation(SourcePoints const &source_points)
-{
-  static constexpr typename SourcePoints::non_const_value_type origin = {};
+  using LocalSourcePoints = Kokkos::Subview<SourcePoints, int, Kokkos::ALL_t>;
+  using LocalPhi = Kokkos::Subview<Phi, int, Kokkos::ALL_t>;
+  using LocalVandermonde =
+      Kokkos::Subview<Vandermonde, int, Kokkos::ALL_t, Kokkos::ALL_t>;
+  using LocalMoment =
+      Kokkos::Subview<Moment, int, Kokkos::ALL_t, Kokkos::ALL_t>;
+  using LocalCoefficients = Kokkos::Subview<Coefficients, int, Kokkos::ALL_t>;
 
-  WorkType radius = Kokkos::Experimental::epsilon_v<WorkType>;
-  for (int neighbor = 0; neighbor < source_points.extent_int(0); neighbor++)
+public:
+  template <typename ExecutionSpace>
+  MovingLeastSquaresCoefficientsKernel(ExecutionSpace const &space,
+                                       TargetPoints const &target_points,
+                                       SourcePoints &source_points)
+      : _target_points(target_points)
+      , _source_points(source_points)
   {
-    WorkType norm = ArborX::Details::distance(source_points(neighbor), origin);
-    radius = Kokkos::max(radius, norm);
+    int const num_targets = source_points.extent_int(0);
+    int const num_neighbors = source_points.extent_int(1);
+    static constexpr int dimension = GeometryTraits::dimension_v<SourcePoint>;
+    static constexpr int degree = PolynomialDegree::value;
+    static constexpr int poly_size = polynomialBasisSize<dimension, degree>();
+
+    _phi = Phi(
+        Kokkos::view_alloc(space, Kokkos::WithoutInitializing,
+                           "ArborX::MovingLeastSquaresCoefficientsKernel::phi"),
+        num_targets, num_neighbors);
+
+    _vandermonde = Vandermonde(
+        Kokkos::view_alloc(
+            space, Kokkos::WithoutInitializing,
+            "ArborX::MovingLeastSquaresCoefficientsKernel::vandermonde"),
+        num_targets, num_neighbors, poly_size);
+
+    _moment =
+        Moment(Kokkos::view_alloc(
+                   space, Kokkos::WithoutInitializing,
+                   "ArborX::MovingLeastSquaresCoefficientsKernel::moment"),
+               num_targets, poly_size, poly_size);
+
+    _svd_diag =
+        SVDDiag(Kokkos::view_alloc(
+                    space, Kokkos::WithoutInitializing,
+                    "ArborX::MovingLeastSquaresCoefficientsKernel::svd_diag"),
+                num_targets, poly_size, poly_size);
+
+    _svd_unit =
+        SVDUnit(Kokkos::view_alloc(
+                    space, Kokkos::WithoutInitializing,
+                    "ArborX::MovingLeastSquaresCoefficientsKernel::svd_unit"),
+                num_targets, poly_size, poly_size);
+
+    _coefficients = Coefficients(
+        Kokkos::view_alloc(
+            space, Kokkos::WithoutInitializing,
+            "ArborX::MovingLeastSquaresCoefficientsKernel::coefficients"),
+        num_targets, num_neighbors);
   }
 
-  // The one at the limit would be 0 due to how CRBFs work
-  return radius * WorkType(1.1);
-}
+private:
+  static KOKKOS_FUNCTION void
+  sourcePointsRecentering(int const neighbor, TargetPoint const &target_point,
+                          LocalSourcePoints &source_points)
+  {
+    static constexpr int dimension = GeometryTraits::dimension_v<SourcePoint>;
 
-template <typename CRBF, typename SourcePoints, typename WorkType, typename Phi>
-KOKKOS_FUNCTION void phiComputation(int const neighbor,
-                                    SourcePoints const &source_points,
-                                    WorkType const radius, Phi &phi)
-{
-  static constexpr typename SourcePoints::non_const_value_type origin = {};
+    for (int k = 0; k < dimension; k++)
+      source_points(neighbor)[k] -= target_point[k];
+  }
 
-  WorkType norm = ArborX::Details::distance(source_points(neighbor), origin);
-  phi(neighbor) = CRBF::evaluate(norm / radius);
-}
+  static KOKKOS_FUNCTION CoefficientsType
+  radiusComputation(LocalSourcePoints const &source_points)
+  {
+    static constexpr SourcePoint origin = {};
 
-template <typename PolynomialDegree, typename SourcePoints,
-          typename Vandermonde>
-KOKKOS_FUNCTION void vandermondeComputation(int const neighbor,
-                                            SourcePoints const &source_points,
-                                            Vandermonde &vandermonde)
-{
-  static constexpr int degree = PolynomialDegree::value;
+    CoefficientsType radius = Kokkos::Experimental::epsilon_v<CoefficientsType>;
+    for (int neighbor = 0; neighbor < source_points.extent_int(0); neighbor++)
+    {
+      CoefficientsType norm =
+          ArborX::Details::distance(source_points(neighbor), origin);
+      radius = Kokkos::max(radius, norm);
+    }
 
-  auto local_vandermonde = Kokkos::subview(vandermonde, neighbor, Kokkos::ALL);
-  auto basis = evaluatePolynomialBasis<degree>(source_points(neighbor));
-  for (int k = 0; k < local_vandermonde.extent_int(0); k++)
-    local_vandermonde(k) = basis[k];
-}
+    // The one at the limit would be 0 due to how CRBFs work
+    return radius * CoefficientsType(1.1);
+  }
 
-template <typename Phi, typename Vandermonde, typename Moment>
-KOKKOS_FUNCTION void momentComputation(int const i, int const j, Phi const &phi,
-                                       Vandermonde const &vandermonde,
-                                       Moment &moment)
-{
-  moment(i, j) = 0;
-  for (int k = 0; k < phi.extent_int(0); k++)
-    moment(i, j) += vandermonde(k, i) * vandermonde(k, j) * phi(k);
-}
+  static KOKKOS_FUNCTION void
+  phiComputation(int const neighbor, LocalSourcePoints const &source_points,
+                 CoefficientsType const radius, LocalPhi &phi)
+  {
+    static constexpr SourcePoint origin = {};
 
-template <typename Phi, typename Vandermonde, typename MomentInverse,
-          typename Coefficients>
-KOKKOS_FUNCTION void coefficientsComputation(
-    int const neighbor, Phi const &phi, Vandermonde const &vandermonde,
-    MomentInverse const &moment_inverse, Coefficients &coefficients)
-{
-  coefficients(neighbor) = 0;
-  for (int i = 0; i < moment_inverse.extent_int(0); i++)
-    coefficients(neighbor) +=
-        moment_inverse(0, i) * vandermonde(neighbor, i) * phi(neighbor);
-}
+    CoefficientsType norm =
+        ArborX::Details::distance(source_points(neighbor), origin);
+    phi(neighbor) = CRBF::evaluate(norm / radius);
+  }
 
-template <typename CRBF, typename PolynomialDegree, typename TargetPoint,
-          typename SourcePoints, typename Phi, typename Vandermonde,
-          typename Moment, typename SVDDiag, typename SVDUnit,
-          typename Coefficients>
-KOKKOS_FUNCTION void movingLeastSquaresCoefficientsKernel(
-    TargetPoint const &target_point, SourcePoints &source_points, Phi &phi,
-    Vandermonde &vandermonde, Moment &moment, SVDDiag &svd_diag,
-    SVDUnit &svd_unit, Coefficients &coefficients)
-{
-  using coefficients_t = typename Coefficients::non_const_value_type;
-  int const poly_size = moment.extent_int(0);
-  int const num_neighbors = source_points.extent_int(0);
+  static KOKKOS_FUNCTION void
+  vandermondeComputation(int const neighbor,
+                         LocalSourcePoints const &source_points,
+                         LocalVandermonde &vandermonde)
+  {
+    static constexpr int degree = PolynomialDegree::value;
 
-  // The goal is to compute the following line vector for each target point:
-  // p(x).[P^T.PHI.P]^-1.P^T.PHI
-  // Where:
-  // - p(x) is the polynomial basis of point x (line vector).
-  // - P is the multidimensional Vandermonde matrix built from the source
-  //   points, i.e., each line is the polynomial basis of a source point.
-  // - PHI is the diagonal weight matrix / CRBF evaluated at each source point.
+    auto local_vandermonde =
+        Kokkos::subview(vandermonde, neighbor, Kokkos::ALL);
+    auto basis = evaluatePolynomialBasis<degree>(source_points(neighbor));
+    for (int k = 0; k < local_vandermonde.extent_int(0); k++)
+      local_vandermonde(k) = basis[k];
+  }
 
-  // We first change the origin of the evaluation to be at the target point.
-  // This lets us use p(0) which is [1 0 ... 0].
-  for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
-    sourcePointsRecentering(neighbor, target_point, source_points);
+  static KOKKOS_FUNCTION void
+  momentComputation(int const i, int const j, LocalPhi const &phi,
+                    LocalVandermonde const &vandermonde, LocalMoment &moment)
+  {
+    moment(i, j) = 0;
+    for (int k = 0; k < phi.extent_int(0); k++)
+      moment(i, j) += vandermonde(k, i) * vandermonde(k, j) * phi(k);
+  }
 
-  // We then compute the radius for each target that will be used in evaluating
-  // the weight for each source point.
-  auto radius = radiusComputation<coefficients_t>(source_points);
+  static KOKKOS_FUNCTION void
+  coefficientsComputation(int const neighbor, LocalPhi const &phi,
+                          LocalVandermonde const &vandermonde,
+                          LocalMoment const &moment,
+                          LocalCoefficients &coefficients)
+  {
+    coefficients(neighbor) = 0;
+    for (int i = 0; i < moment.extent_int(0); i++)
+      coefficients(neighbor) +=
+          moment(0, i) * vandermonde(neighbor, i) * phi(neighbor);
+  }
 
-  // This computes PHI given the source points as well as the radius
-  for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
-    phiComputation<CRBF>(neighbor, source_points, radius, phi);
+public:
+  auto size() const { return _source_points.extent(0); }
+  auto coefficients() { return _coefficients; }
 
-  // This builds the Vandermonde (P) matrix
-  for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
-    vandermondeComputation<PolynomialDegree>(neighbor, source_points,
-                                             vandermonde);
+  KOKKOS_FUNCTION void operator()(int const target) const
+  {
+    auto target_point = TargetAccess::get(_target_points, target);
+    auto source_points = Kokkos::subview(_source_points, target, Kokkos::ALL);
+    auto phi = Kokkos::subview(_phi, target, Kokkos::ALL);
+    auto vandermonde =
+        Kokkos::subview(_vandermonde, target, Kokkos::ALL, Kokkos::ALL);
+    auto moment = Kokkos::subview(_moment, target, Kokkos::ALL, Kokkos::ALL);
+    auto svd_diag =
+        Kokkos::subview(_svd_diag, target, Kokkos::ALL, Kokkos::ALL);
+    auto svd_unit =
+        Kokkos::subview(_svd_unit, target, Kokkos::ALL, Kokkos::ALL);
+    auto coefficients = Kokkos::subview(_coefficients, target, Kokkos::ALL);
 
-  // We then create what is called the moment matrix, which is P^T.PHI.P. By
-  // construction, it is symmetric.
-  for (int i = 0; i < poly_size; i++)
-    for (int j = 0; j < poly_size; j++)
-      momentComputation(i, j, phi, vandermonde, moment);
+    int const poly_size = moment.extent_int(0);
+    int const num_neighbors = source_points.extent_int(0);
 
-  // We need the inverse of P^T.PHI.P, and because it is symmetric, we can use
-  // the symmetric SVD algorithm to get it.
-  symmetricPseudoInverseSVDKernel(moment, svd_diag, svd_unit);
-  // Now, the moment has [P^T.PHI.P]^-1
+    // The goal is to compute the following line vector for each target point:
+    // p(x).[P^T.PHI.P]^-1.P^T.PHI
+    // Where:
+    // - p(x) is the polynomial basis of point x (line vector).
+    // - P is the multidimensional Vandermonde matrix built from the source
+    //   points, i.e., each line is the polynomial basis of a source point.
+    // - PHI is the diagonal weight matrix / CRBF evaluated at each source
+    // point.
 
-  // Finally, the result is produced by computing p(0).[P^T.PHI.P]^-1.P^T.PHI
-  for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
-    coefficientsComputation(neighbor, phi, vandermonde, moment, coefficients);
-}
+    // We first change the origin of the evaluation to be at the target point.
+    // This lets us use p(0) which is [1 0 ... 0].
+    for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
+      sourcePointsRecentering(neighbor, target_point, source_points);
+
+    // We then compute the radius for each target that will be used in
+    // evaluating the weight for each source point.
+    auto radius = radiusComputation(source_points);
+
+    // This computes PHI given the source points as well as the radius
+    for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
+      phiComputation(neighbor, source_points, radius, phi);
+
+    // This builds the Vandermonde (P) matrix
+    for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
+      vandermondeComputation(neighbor, source_points, vandermonde);
+
+    // We then create what is called the moment matrix, which is P^T.PHI.P. By
+    // construction, it is symmetric.
+    for (int i = 0; i < poly_size; i++)
+      for (int j = 0; j < poly_size; j++)
+        momentComputation(i, j, phi, vandermonde, moment);
+
+    // We need the inverse of P^T.PHI.P, and because it is symmetric, we can use
+    // the symmetric SVD algorithm to get it.
+    symmetricPseudoInverseSVDKernel(moment, svd_diag, svd_unit);
+    // Now, the moment has [P^T.PHI.P]^-1
+
+    // Finally, the result is produced by computing p(0).[P^T.PHI.P]^-1.P^T.PHI
+    for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
+      coefficientsComputation(neighbor, phi, vandermonde, moment, coefficients);
+  }
+
+private:
+  TargetPoints _target_points;
+  SourcePoints _source_points;
+  Phi _phi;
+  Vandermonde _vandermonde;
+  Moment _moment;
+  SVDDiag _svd_diag;
+  SVDUnit _svd_unit;
+  Coefficients _coefficients;
+};
 
 template <typename CRBF, typename PolynomialDegree, typename CoefficientsType,
           typename MemorySpace, typename ExecutionSpace, typename TargetPoints,
@@ -166,65 +259,15 @@ movingLeastSquaresCoefficients(ExecutionSpace const &space,
   KokkosExt::ScopedProfileRegion guard(
       "ArborX::MovingLeastSquaresCoefficients");
 
-  using tgt_acc = AccessTraits<TargetPoints, PrimitivesTag>;
-  using tgt_point = typename ArborX::Details::AccessTraitsHelper<tgt_acc>::type;
-  int const num_targets = source_points.extent_int(0);
-  int const num_neighbors = source_points.extent_int(1);
-  static constexpr int dimension = GeometryTraits::dimension_v<tgt_point>;
-  static constexpr int degree = PolynomialDegree::value;
-  static constexpr int poly_size = polynomialBasisSize<dimension, degree>();
-
-  Kokkos::View<CoefficientsType **, MemorySpace> phi(
-      Kokkos::view_alloc(space, Kokkos::WithoutInitializing,
-                         "ArborX::MovingLeastSquaresCoefficients::phi"),
-      num_targets, num_neighbors);
-  Kokkos::View<CoefficientsType ***, MemorySpace> vandermonde(
-      Kokkos::view_alloc(space, Kokkos::WithoutInitializing,
-                         "ArborX::MovingLeastSquaresCoefficients::vandermonde"),
-      num_targets, num_neighbors, poly_size);
-  Kokkos::View<CoefficientsType ***, MemorySpace> moment(
-      Kokkos::view_alloc(space, Kokkos::WithoutInitializing,
-                         "ArborX::MovingLeastSquaresCoefficients::moment"),
-      num_targets, poly_size, poly_size);
-  Kokkos::View<CoefficientsType ***, MemorySpace> svd_diag(
-      Kokkos::view_alloc(space, Kokkos::WithoutInitializing,
-                         "ArborX::MovingLeastSquaresCoefficients::svd_diag"),
-      num_targets, poly_size, poly_size);
-  Kokkos::View<CoefficientsType ***, MemorySpace> svd_unit(
-      Kokkos::view_alloc(space, Kokkos::WithoutInitializing,
-                         "ArborX::MovingLeastSquaresCoefficients::svd_unit"),
-      num_targets, poly_size, poly_size);
-  Kokkos::View<CoefficientsType **, MemorySpace> coefficients(
-      Kokkos::view_alloc(
-          space, Kokkos::WithoutInitializing,
-          "ArborX::MovingLeastSquaresCoefficients::coefficients"),
-      num_targets, num_neighbors);
+  MovingLeastSquaresCoefficientsKernel<CRBF, PolynomialDegree, CoefficientsType,
+                                       MemorySpace, TargetPoints, SourcePoints>
+      kernel(space, target_points, source_points);
 
   Kokkos::parallel_for(
       "ArborX::MovingLeastSquaresCoefficients::operation",
-      Kokkos::RangePolicy<ExecutionSpace>(space, 0, num_targets),
-      KOKKOS_LAMBDA(int const target) {
-        auto target_point = tgt_acc::get(target_points, target);
-        auto local_source_points =
-            Kokkos::subview(source_points, target, Kokkos::ALL);
-        auto local_phi = Kokkos::subview(phi, target, Kokkos::ALL);
-        auto local_vandermonde =
-            Kokkos::subview(vandermonde, target, Kokkos::ALL, Kokkos::ALL);
-        auto local_moment =
-            Kokkos::subview(moment, target, Kokkos::ALL, Kokkos::ALL);
-        auto local_svd_diag =
-            Kokkos::subview(svd_diag, target, Kokkos::ALL, Kokkos::ALL);
-        auto local_svd_unit =
-            Kokkos::subview(svd_unit, target, Kokkos::ALL, Kokkos::ALL);
-        auto local_coefficients =
-            Kokkos::subview(coefficients, target, Kokkos::ALL);
+      Kokkos::RangePolicy<ExecutionSpace>(space, 0, kernel.size()), kernel);
 
-        movingLeastSquaresCoefficientsKernel<CRBF, PolynomialDegree>(
-            target_point, local_source_points, local_phi, local_vandermonde,
-            local_moment, local_svd_diag, local_svd_unit, local_coefficients);
-      });
-
-  return coefficients;
+  return kernel.coefficients();
 }
 
 } // namespace ArborX::Interpolation::Details
