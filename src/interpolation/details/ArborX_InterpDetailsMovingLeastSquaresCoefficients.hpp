@@ -175,11 +175,18 @@ private:
   }
 
 public:
-  auto size() const { return _source_points.extent(0); }
-  auto coefficients() { return _coefficients; }
+  KOKKOS_FUNCTION auto size() const { return _source_points.extent(0); }
+  auto coefficients() const { return _coefficients; }
+  std::size_t team_shmem_size(int) const { return 0; }
 
-  KOKKOS_FUNCTION void operator()(int const target) const
+  template <typename TeamMember>
+  KOKKOS_FUNCTION void operator()(TeamMember member) const
   {
+    int const target =
+        member.league_rank() * member.team_size() + member.team_rank();
+    if (target >= int(size()))
+      return;
+
     auto target_point = TargetAccess::get(_target_points, target);
     auto source_points = Kokkos::subview(_source_points, target, Kokkos::ALL);
     auto phi = Kokkos::subview(_phi, target, Kokkos::ALL);
@@ -237,6 +244,18 @@ public:
       coefficientsComputation(neighbor, phi, vandermonde, moment, coefficients);
   }
 
+  template <typename ExecutionSpace>
+  Kokkos::TeamPolicy<ExecutionSpace>
+  make_policy(ExecutionSpace const &space) const
+  {
+    Kokkos::TeamPolicy<ExecutionSpace> policy(space, 1, Kokkos::AUTO);
+    int rec = policy.team_size_recommended(*this, Kokkos::ParallelForTag{});
+    int div = size() / rec;
+    int mod = size() % rec;
+    int tot = div + ((mod == 0) ? 0 : 1);
+    return Kokkos::TeamPolicy<ExecutionSpace>(space, tot, rec);
+  }
+
 private:
   TargetPoints _target_points;
   SourcePoints _source_points;
@@ -263,9 +282,8 @@ movingLeastSquaresCoefficients(ExecutionSpace const &space,
                                        MemorySpace, TargetPoints, SourcePoints>
       kernel(space, target_points, source_points);
 
-  Kokkos::parallel_for(
-      "ArborX::MovingLeastSquaresCoefficients::operation",
-      Kokkos::RangePolicy<ExecutionSpace>(space, 0, kernel.size()), kernel);
+  Kokkos::parallel_for("ArborX::MovingLeastSquaresCoefficients::operation",
+                       kernel.make_policy(space), kernel);
 
   return kernel.coefficients();
 }
