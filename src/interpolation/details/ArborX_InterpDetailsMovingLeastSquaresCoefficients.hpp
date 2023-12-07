@@ -25,20 +25,16 @@
 namespace ArborX::Interpolation::Details
 {
 
-template <typename SourcePoints, typename TargetPoint,
-          typename CenteredSourcePoints>
-KOKKOS_FUNCTION void
-sourcePointsRecentering(int const neighbor, SourcePoints const &source_points,
-                        TargetPoint const &target_point,
-                        CenteredSourcePoints &centered_source_points)
+template <typename TargetPoint, typename SourcePoints>
+KOKKOS_FUNCTION void sourcePointsRecentering(int const neighbor,
+                                             TargetPoint const &target_point,
+                                             SourcePoints &source_points)
 {
   static constexpr int dimension =
       GeometryTraits::dimension_v<typename SourcePoints::value_type>;
 
-  auto source_point = source_points(neighbor);
   for (int k = 0; k < dimension; k++)
-    source_point[k] -= target_point[k];
-  centered_source_points(neighbor) = source_point;
+    source_points(neighbor)[k] -= target_point[k];
 }
 
 template <typename WorkType, typename SourcePoints>
@@ -62,7 +58,7 @@ KOKKOS_FUNCTION void phiComputation(int const neighbor,
                                     SourcePoints const &source_points,
                                     WorkType const radius, Phi &phi)
 {
-  static constexpr typename SourcePoints::value_type origin = {};
+  static constexpr typename SourcePoints::non_const_value_type origin = {};
 
   WorkType norm = ArborX::Details::distance(source_points(neighbor), origin);
   phi(neighbor) = CRBF::evaluate(norm / radius);
@@ -128,8 +124,7 @@ KOKKOS_FUNCTION void movingLeastSquaresCoefficientsKernel(
   // We first change the origin of the evaluation to be at the target point.
   // This lets us use p(0) which is [1 0 ... 0].
   for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
-    sourcePointsRecentering(neighbor, source_points, target_point,
-                            source_points);
+    sourcePointsRecentering(neighbor, target_point, source_points);
 
   // We then compute the radius for each target that will be used in evaluating
   // the weight for each source point.
