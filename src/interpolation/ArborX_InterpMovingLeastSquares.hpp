@@ -146,11 +146,14 @@ public:
     source_tree.query(space, predicates,
                       ArborX::Details::LegacyDefaultCallback{}, indices,
                       offsets);
+    source_tree = {};
 
     // Fill in the value indices object so values can be transferred from a 1D
     // source data to a properly distributed 2D array for each target.
     auto const source_view = fillValuesIndicesAndGetSourceView(
         space, indices, offsets, num_targets, num_neighbors_val, source_points);
+    indices = {};
+    offsets = {};
 
     // Compute the moving least squares coefficients
     _coeffs = Details::movingLeastSquaresCoefficients<
