@@ -33,17 +33,23 @@ class MovingLeastSquaresCoefficientsKernel
 private:
   using ScratchMemorySpace = typename ExecutionSpace::scratch_memory_space;
 
-  using Phi = Kokkos::View<CoefficientsType **, MemorySpace>;
-  using Vandermonde = Kokkos::View<CoefficientsType ***, MemorySpace>;
-  using Moment = Kokkos::View<CoefficientsType ***, MemorySpace>;
-  using SVDDiag = Kokkos::View<CoefficientsType ***, MemorySpace>;
-  using SVDUnit = Kokkos::View<CoefficientsType ***, MemorySpace>;
-  using Coefficients = Kokkos::View<CoefficientsType **, MemorySpace>;
+  using Phi = Kokkos::View<CoefficientsType **, ScratchMemorySpace,
+                           Kokkos::MemoryUnmanaged>;
+  using Vandermonde = Kokkos::View<CoefficientsType ***, ScratchMemorySpace,
+                                   Kokkos::MemoryUnmanaged>;
+  using Moment = Kokkos::View<CoefficientsType ***, ScratchMemorySpace,
+                              Kokkos::MemoryUnmanaged>;
+  using SVDDiag = Kokkos::View<CoefficientsType ***, ScratchMemorySpace,
+                               Kokkos::MemoryUnmanaged>;
+  using SVDUnit = Kokkos::View<CoefficientsType ***, ScratchMemorySpace,
+                               Kokkos::MemoryUnmanaged>;
 
   using SourcePoint = typename SourcePoints::non_const_value_type;
   using TargetAccess = AccessTraits<TargetPoints, PrimitivesTag>;
   using TargetPoint =
       typename ArborX::Details::AccessTraitsHelper<TargetAccess>::type;
+
+  using Coefficients = Kokkos::View<CoefficientsType **, MemorySpace>;
 
   using LocalSourcePoints = Kokkos::Subview<SourcePoints, int, Kokkos::ALL_t>;
   using LocalPhi = Kokkos::Subview<Phi, int, Kokkos::ALL_t>;
@@ -64,44 +70,15 @@ public:
                                        SourcePoints &source_points)
       : _target_points(target_points)
       , _source_points(source_points)
+      , _num_neighbors(source_points.extent_int(1))
   {
     int const num_targets = source_points.extent_int(0);
-    int const num_neighbors = source_points.extent_int(1);
-
-    _phi = Phi(
-        Kokkos::view_alloc(space, Kokkos::WithoutInitializing,
-                           "ArborX::MovingLeastSquaresCoefficientsKernel::phi"),
-        num_targets, num_neighbors);
-
-    _vandermonde = Vandermonde(
-        Kokkos::view_alloc(
-            space, Kokkos::WithoutInitializing,
-            "ArborX::MovingLeastSquaresCoefficientsKernel::vandermonde"),
-        num_targets, num_neighbors, POLY_SIZE);
-
-    _moment =
-        Moment(Kokkos::view_alloc(
-                   space, Kokkos::WithoutInitializing,
-                   "ArborX::MovingLeastSquaresCoefficientsKernel::moment"),
-               num_targets, POLY_SIZE, POLY_SIZE);
-
-    _svd_diag =
-        SVDDiag(Kokkos::view_alloc(
-                    space, Kokkos::WithoutInitializing,
-                    "ArborX::MovingLeastSquaresCoefficientsKernel::svd_diag"),
-                num_targets, POLY_SIZE, POLY_SIZE);
-
-    _svd_unit =
-        SVDUnit(Kokkos::view_alloc(
-                    space, Kokkos::WithoutInitializing,
-                    "ArborX::MovingLeastSquaresCoefficientsKernel::svd_unit"),
-                num_targets, POLY_SIZE, POLY_SIZE);
 
     _coefficients = Coefficients(
         Kokkos::view_alloc(
             space, Kokkos::WithoutInitializing,
             "ArborX::MovingLeastSquaresCoefficientsKernel::coefficients"),
-        num_targets, num_neighbors);
+        num_targets, _num_neighbors);
   }
 
 private:
@@ -174,7 +151,17 @@ public:
   KOKKOS_FUNCTION auto size() const { return _source_points.extent(0); }
   auto coefficients() const { return _coefficients; }
 
-  std::size_t team_shmem_size(int const team_size) const { return 0; }
+  std::size_t team_shmem_size(int const team_size) const
+  {
+    std::size_t val = 0;
+    val += Phi::shmem_size(team_size, _num_neighbors);
+    val += Vandermonde::shmem_size(team_size, _num_neighbors, POLY_SIZE);
+    val += Moment::shmem_size(team_size, POLY_SIZE, POLY_SIZE);
+    val += SVDDiag::shmem_size(team_size, POLY_SIZE, POLY_SIZE);
+    val += SVDUnit::shmem_size(team_size, POLY_SIZE, POLY_SIZE);
+    printf("%d, %ld\n", team_size, val);
+    return val;
+  }
 
   template <typename TeamMember>
   KOKKOS_FUNCTION void operator()(TeamMember member) const
@@ -184,19 +171,28 @@ public:
     if (target >= int(size()))
       return;
 
+    Phi team_phi(member.team_scratch(0), member.team_size(), _num_neighbors);
+    Vandermonde team_vandermonde(member.team_scratch(0), member.team_size(),
+                                 _num_neighbors, POLY_SIZE);
+    Moment team_moment(member.team_scratch(0), member.team_size(), POLY_SIZE,
+                       POLY_SIZE);
+    SVDDiag team_svd_diag(member.team_scratch(0), member.team_size(), POLY_SIZE,
+                          POLY_SIZE);
+    SVDUnit team_svd_unit(member.team_scratch(0), member.team_size(), POLY_SIZE,
+                          POLY_SIZE);
+
     auto target_point = TargetAccess::get(_target_points, target);
     auto source_points = Kokkos::subview(_source_points, target, Kokkos::ALL);
-    auto phi = Kokkos::subview(_phi, target, Kokkos::ALL);
-    auto vandermonde =
-        Kokkos::subview(_vandermonde, target, Kokkos::ALL, Kokkos::ALL);
-    auto moment = Kokkos::subview(_moment, target, Kokkos::ALL, Kokkos::ALL);
-    auto svd_diag =
-        Kokkos::subview(_svd_diag, target, Kokkos::ALL, Kokkos::ALL);
-    auto svd_unit =
-        Kokkos::subview(_svd_unit, target, Kokkos::ALL, Kokkos::ALL);
+    auto phi = Kokkos::subview(team_phi, member.team_rank(), Kokkos::ALL);
+    auto vandermonde = Kokkos::subview(team_vandermonde, member.team_rank(),
+                                       Kokkos::ALL, Kokkos::ALL);
+    auto moment = Kokkos::subview(team_moment, member.team_rank(), Kokkos::ALL,
+                                  Kokkos::ALL);
+    auto svd_diag = Kokkos::subview(team_svd_diag, member.team_rank(),
+                                    Kokkos::ALL, Kokkos::ALL);
+    auto svd_unit = Kokkos::subview(team_svd_unit, member.team_rank(),
+                                    Kokkos::ALL, Kokkos::ALL);
     auto coefficients = Kokkos::subview(_coefficients, target, Kokkos::ALL);
-
-    int const num_neighbors = source_points.extent_int(0);
 
     // The goal is to compute the following line vector for each target point:
     // p(x).[P^T.PHI.P]^-1.P^T.PHI
@@ -209,7 +205,7 @@ public:
 
     // We first change the origin of the evaluation to be at the target point.
     // This lets us use p(0) which is [1 0 ... 0].
-    for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
+    for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
       sourcePointsRecentering(neighbor, target_point, source_points);
 
     // We then compute the radius for each target that will be used in
@@ -217,11 +213,11 @@ public:
     auto radius = radiusComputation(source_points);
 
     // This computes PHI given the source points as well as the radius
-    for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
+    for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
       phiComputation(neighbor, source_points, radius, phi);
 
     // This builds the Vandermonde (P) matrix
-    for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
+    for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
       vandermondeComputation(neighbor, source_points, vandermonde);
 
     // We then create what is called the moment matrix, which is P^T.PHI.P. By
@@ -236,7 +232,7 @@ public:
     // Now, the moment has [P^T.PHI.P]^-1
 
     // Finally, the result is produced by computing p(0).[P^T.PHI.P]^-1.P^T.PHI
-    for (int neighbor = 0; neighbor < num_neighbors; neighbor++)
+    for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
       coefficientsComputation(neighbor, phi, vandermonde, moment, coefficients);
   }
 
@@ -255,12 +251,8 @@ public:
 private:
   TargetPoints _target_points;
   SourcePoints _source_points;
-  Phi _phi;
-  Vandermonde _vandermonde;
-  Moment _moment;
-  SVDDiag _svd_diag;
-  SVDUnit _svd_unit;
   Coefficients _coefficients;
+  int _num_neighbors;
 };
 
 template <typename CRBF, typename PolynomialDegree, typename CoefficientsType,
