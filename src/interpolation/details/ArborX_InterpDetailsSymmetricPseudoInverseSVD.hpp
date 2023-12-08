@@ -56,7 +56,7 @@ KOKKOS_FUNCTION auto argmaxUpperTriangle(Matrix const &mat)
 // a sign matrix (only 1 or -1 on the diagonal, 0 elsewhere).
 // Thus A = U.ES.U^T and A^-1 = U.[ ES^-1 ].U^T
 //
-// mat <=> A and ES
+// mat <=> initial ES
 // diag <=> final ES
 // unit <=> U
 template <typename Matrix, typename Diag, typename Unit>
@@ -174,10 +174,9 @@ KOKKOS_FUNCTION void symmetricPseudoInverseSVDKernel(Matrix &mat, Diag &diag,
   for (int i = 0; i < size; i++)
     for (int j = 0; j < size; j++)
     {
-      value_t tmp = 0;
+      mat(i, j) = 0;
       for (int k = 0; k < size; k++)
-        tmp += diag(k) * unit(i, k) * unit(j, k);
-      mat(i, j) = tmp;
+        mat(i, j) += diag(k) * unit(i, k) * unit(j, k);
     }
 }
 
