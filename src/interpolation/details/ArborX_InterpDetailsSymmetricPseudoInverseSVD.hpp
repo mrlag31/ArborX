@@ -56,8 +56,8 @@ KOKKOS_FUNCTION auto argmaxUpperTriangle(Matrix const &mat)
 // a sign matrix (only 1 or -1 on the diagonal, 0 elsewhere).
 // Thus A = U.ES.U^T and A^-1 = U.[ ES^-1 ].U^T
 //
-// mat <=> A
-// diag <=> ES
+// mat <=> A and ES
+// diag <=> final ES
 // unit <=> U
 template <typename Matrix, typename Diag, typename Unit>
 KOKKOS_FUNCTION void symmetricPseudoInverseSVDKernel(Matrix &mat, Diag &diag,
@@ -69,22 +69,19 @@ KOKKOS_FUNCTION void symmetricPseudoInverseSVDKernel(Matrix &mat, Diag &diag,
   // We first initialize U as the identity matrix and copy A to ES
   for (int i = 0; i < size; i++)
     for (int j = 0; j < size; j++)
-    {
       unit(i, j) = value_t(i == j);
-      diag(i, j) = mat(i, j);
-    }
 
   static constexpr value_t epsilon = Kokkos::Experimental::epsilon_v<float>;
   while (true)
   {
     // We have a guarantee that p < q
-    auto const [max_val, p, q] = argmaxUpperTriangle(diag);
+    auto const [max_val, p, q] = argmaxUpperTriangle(mat);
     if (max_val <= epsilon)
       break;
 
-    auto const a = diag(p, p);
-    auto const b = diag(p, q);
-    auto const c = diag(q, q);
+    auto const a = mat(p, p);
+    auto const b = mat(p, q);
+    auto const c = mat(q, q);
 
     // Our submatrix is now
     // +----------+----------+   +---+---+
@@ -128,28 +125,28 @@ KOKKOS_FUNCTION void symmetricPseudoInverseSVDKernel(Matrix &mat, Diag &diag,
     // R'(theta)^T . ES . R'(theta)
     for (int i = 0; i < p; i++)
     {
-      auto const es_ip = diag(i, p);
-      auto const es_iq = diag(i, q);
-      diag(i, p) = cos_theta * es_ip + sin_theta * es_iq;
-      diag(i, q) = -sin_theta * es_ip + cos_theta * es_iq;
+      auto const es_ip = mat(i, p);
+      auto const es_iq = mat(i, q);
+      mat(i, p) = cos_theta * es_ip + sin_theta * es_iq;
+      mat(i, q) = -sin_theta * es_ip + cos_theta * es_iq;
     }
-    diag(p, p) = x;
+    mat(p, p) = x;
     for (int i = p + 1; i < q; i++)
     {
-      auto const es_pi = diag(p, i);
-      auto const es_iq = diag(i, q);
-      diag(p, i) = cos_theta * es_pi + sin_theta * es_iq;
-      diag(i, q) = -sin_theta * es_pi + cos_theta * es_iq;
+      auto const es_pi = mat(p, i);
+      auto const es_iq = mat(i, q);
+      mat(p, i) = cos_theta * es_pi + sin_theta * es_iq;
+      mat(i, q) = -sin_theta * es_pi + cos_theta * es_iq;
     }
-    diag(q, q) = y;
+    mat(q, q) = y;
     for (int i = q + 1; i < size; i++)
     {
-      auto const es_pi = diag(p, i);
-      auto const es_qi = diag(q, i);
-      diag(p, i) = cos_theta * es_pi + sin_theta * es_qi;
-      diag(q, i) = -sin_theta * es_pi + cos_theta * es_qi;
+      auto const es_pi = mat(p, i);
+      auto const es_qi = mat(q, i);
+      mat(p, i) = cos_theta * es_pi + sin_theta * es_qi;
+      mat(q, i) = -sin_theta * es_pi + cos_theta * es_qi;
     }
-    diag(p, q) = 0;
+    mat(p, q) = 0;
 
     // U . R'(theta)
     for (int i = 0; i < size; i++)
@@ -164,12 +161,14 @@ KOKKOS_FUNCTION void symmetricPseudoInverseSVDKernel(Matrix &mat, Diag &diag,
   // We compute the max to get a range of the invertible eigenvalues
   auto max_eigen = epsilon;
   for (int i = 0; i < size; i++)
-    max_eigen = Kokkos::max(Kokkos::abs(diag(i, i)), max_eigen);
+  {
+    diag(i) = mat(i, i);
+    max_eigen = Kokkos::max(Kokkos::abs(diag(i)), max_eigen);
+  }
 
   // We invert the diagonal of ES, except if "0" is found
   for (int i = 0; i < size; i++)
-    diag(i, i) =
-        (Kokkos::abs(diag(i, i)) < max_eigen * epsilon) ? 0 : 1 / diag(i, i);
+    diag(i) = (Kokkos::abs(diag(i)) < max_eigen * epsilon) ? 0 : 1 / diag(i);
 
   // Then we fill out A as the pseudo inverse
   for (int i = 0; i < size; i++)
@@ -177,7 +176,7 @@ KOKKOS_FUNCTION void symmetricPseudoInverseSVDKernel(Matrix &mat, Diag &diag,
     {
       value_t tmp = 0;
       for (int k = 0; k < size; k++)
-        tmp += diag(k, k) * unit(i, k) * unit(j, k);
+        tmp += diag(k) * unit(i, k) * unit(j, k);
       mat(i, j) = tmp;
     }
 }

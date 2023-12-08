@@ -20,14 +20,15 @@ template <typename MS, typename ES, typename V, int M, int N>
 void makeCase(ES const &es, V const (&src_arr)[M][N][N],
               V const (&ref_arr)[M][N][N])
 {
-  using device_view = Kokkos::View<V[M][N][N], MS>;
-  using host_view = typename device_view::HostMirror;
+  using device_view_2d = Kokkos::View<V[M][N][N], MS>;
+  using device_view_1d = Kokkos::View<V[M][N], MS>;
+  using host_view_2d = typename device_view_2d::HostMirror;
 
-  host_view src("Testing::src");
-  host_view ref("Testing::ref");
-  device_view inv("Testing::inv");
-  device_view svd_diag("Testing::svd_diag");
-  device_view svd_unit("Testing::svd_unit");
+  host_view_2d src("Testing::src");
+  host_view_2d ref("Testing::ref");
+  device_view_2d inv("Testing::inv");
+  device_view_1d svd_diag("Testing::svd_diag");
+  device_view_2d svd_unit("Testing::svd_unit");
 
   for (int i = 0; i < M; i++)
     for (int j = 0; j < N; j++)
@@ -43,8 +44,7 @@ void makeCase(ES const &es, V const (&src_arr)[M][N][N],
       "Testing::SVD", Kokkos::RangePolicy<ES>(es, 0, M),
       KOKKOS_LAMBDA(int const i) {
         auto local_inv = Kokkos::subview(inv, i, Kokkos::ALL, Kokkos::ALL);
-        auto local_svd_diag =
-            Kokkos::subview(svd_diag, i, Kokkos::ALL, Kokkos::ALL);
+        auto local_svd_diag = Kokkos::subview(svd_diag, i, Kokkos::ALL);
         auto local_svd_unit =
             Kokkos::subview(svd_unit, i, Kokkos::ALL, Kokkos::ALL);
         ArborX::Interpolation::Details::symmetricPseudoInverseSVDKernel(
@@ -137,11 +137,12 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(pseudo_inv_empty, DeviceType, ARBORX_DEVICE_TYPES)
   ExecutionSpace space{};
 
   Kokkos::View<double **, MemorySpace> mat("mat", 0, 0);
+  Kokkos::View<double *, MemorySpace> diag("diag", 0);
   Kokkos::parallel_for(
       "Testing::SVD", Kokkos::RangePolicy<ExecutionSpace>(space, 0, 1),
       KOKKOS_LAMBDA(int const) {
         ArborX::Interpolation::Details::symmetricPseudoInverseSVDKernel(
-            mat, mat, mat);
+            mat, diag, mat);
       });
   BOOST_TEST(mat.size() == 0);
 }
