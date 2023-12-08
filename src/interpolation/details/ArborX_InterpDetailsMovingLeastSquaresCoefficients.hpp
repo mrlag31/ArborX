@@ -89,28 +89,22 @@ private:
       source_points(neighbor)[k] -= target_point[k];
   }
 
-  static KOKKOS_FUNCTION CoefficientsType
-  radiusComputation(LocalSourcePoints const &source_points)
+  static KOKKOS_FUNCTION void
+  phiComputation(LocalSourcePoints const &source_points, LocalPhi &phi)
   {
     CoefficientsType radius = Kokkos::Experimental::epsilon_v<CoefficientsType>;
     for (int neighbor = 0; neighbor < source_points.extent_int(0); neighbor++)
     {
-      CoefficientsType norm =
+      phi(neighbor) =
           ArborX::Details::distance(source_points(neighbor), ORIGIN);
-      radius = Kokkos::max(radius, norm);
+      radius = Kokkos::max(radius, phi(neighbor));
     }
 
     // The one at the limit would be 0 due to how CRBFs work
-    return radius * CoefficientsType(1.1);
-  }
+    radius *= CoefficientsType(1.1);
 
-  static KOKKOS_FUNCTION void
-  phiComputation(int const neighbor, LocalSourcePoints const &source_points,
-                 CoefficientsType const radius, LocalPhi &phi)
-  {
-    CoefficientsType norm =
-        ArborX::Details::distance(source_points(neighbor), ORIGIN);
-    phi(neighbor) = CRBF::evaluate(norm / radius);
+    for (int neighbor = 0; neighbor < source_points.extent_int(0); neighbor++)
+      phi(neighbor) = CRBF::evaluate(phi(neighbor) / radius);
   }
 
   static KOKKOS_FUNCTION void
@@ -118,11 +112,9 @@ private:
                          LocalSourcePoints const &source_points,
                          LocalVandermonde &vandermonde)
   {
-    auto local_vandermonde =
-        Kokkos::subview(vandermonde, neighbor, Kokkos::ALL);
     auto basis = evaluatePolynomialBasis<DEGREE>(source_points(neighbor));
-    for (int k = 0; k < local_vandermonde.extent_int(0); k++)
-      local_vandermonde(k) = basis[k];
+    for (int k = 0; k < vandermonde.extent_int(1); k++)
+      vandermonde(neighbor, k) = basis[k];
   }
 
   static KOKKOS_FUNCTION void
@@ -202,13 +194,8 @@ public:
     for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
       sourcePointsRecentering(neighbor, target_point, source_points);
 
-    // We then compute the radius for each target that will be used in
-    // evaluating the weight for each source point.
-    auto radius = radiusComputation(source_points);
-
-    // This computes PHI given the source points as well as the radius
-    for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
-      phiComputation(neighbor, source_points, radius, phi);
+    // This computes PHI given the source points (radius is computed inside)
+    phiComputation(source_points, phi);
 
     // This builds the Vandermonde (P) matrix
     for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
