@@ -43,16 +43,15 @@ private:
   static constexpr int POLY_SIZE = polynomialBasisSize<DIMENSION, DEGREE>();
   static constexpr SourcePoint ORIGIN = {};
 
-  using Phi = Kokkos::View<CoefficientsType **, ScratchMemorySpace,
-                           Kokkos::MemoryUnmanaged>;
-  using Vandermonde = Kokkos::View<CoefficientsType **[POLY_SIZE],
-                                   ScratchMemorySpace, Kokkos::MemoryUnmanaged>;
-  using Moment = Kokkos::View<CoefficientsType *[POLY_SIZE][POLY_SIZE],
-                              ScratchMemorySpace, Kokkos::MemoryUnmanaged>;
-  using SVDDiag = Kokkos::View<CoefficientsType *[POLY_SIZE],
-                               ScratchMemorySpace, Kokkos::MemoryUnmanaged>;
-  using SVDUnit = Kokkos::View<CoefficientsType *[POLY_SIZE][POLY_SIZE],
-                               ScratchMemorySpace, Kokkos::MemoryUnmanaged>;
+  template <typename T>
+  using UnmanagedView =
+      Kokkos::View<T, ScratchMemorySpace, Kokkos::MemoryUnmanaged>;
+
+  using Phi = UnmanagedView<CoefficientsType **>;
+  using Vandermonde = UnmanagedView<CoefficientsType **[POLY_SIZE]>;
+  using Moment = UnmanagedView<CoefficientsType *[POLY_SIZE][POLY_SIZE]>;
+  using SVDDiag = UnmanagedView<CoefficientsType *[POLY_SIZE]>;
+  using SVDUnit = UnmanagedView<CoefficientsType *[POLY_SIZE][POLY_SIZE]>;
 
   using Coefficients = Kokkos::View<CoefficientsType **, MemorySpace>;
 
@@ -82,11 +81,12 @@ public:
 
 private:
   KOKKOS_FUNCTION void
-  sourcePointsRecentering(int const neighbor, TargetPoint const &target_point,
+  sourcePointsRecentering(TargetPoint const &target_point,
                           LocalSourcePoints &source_points) const
   {
-    for (int k = 0; k < DIMENSION; k++)
-      source_points(neighbor)[k] -= target_point[k];
+    for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
+      for (int k = 0; k < DIMENSION; k++)
+        source_points(neighbor)[k] -= target_point[k];
   }
 
   KOKKOS_FUNCTION void phiComputation(LocalSourcePoints const &source_points,
@@ -108,36 +108,42 @@ private:
   }
 
   KOKKOS_FUNCTION void
-  vandermondeComputation(int const neighbor,
-                         LocalSourcePoints const &source_points,
+  vandermondeComputation(LocalSourcePoints const &source_points,
                          LocalVandermonde &vandermonde) const
   {
-    auto basis = evaluatePolynomialBasis<DEGREE>(source_points(neighbor));
-    for (int k = 0; k < POLY_SIZE; k++)
-      vandermonde(neighbor, k) = basis[k];
+    for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
+    {
+      auto basis = evaluatePolynomialBasis<DEGREE>(source_points(neighbor));
+      for (int k = 0; k < POLY_SIZE; k++)
+        vandermonde(neighbor, k) = basis[k];
+    }
   }
 
-  KOKKOS_FUNCTION void momentComputation(int const i, int const j,
-                                         LocalPhi const &phi,
+  KOKKOS_FUNCTION void momentComputation(LocalPhi const &phi,
                                          LocalVandermonde const &vandermonde,
                                          LocalMoment &moment) const
   {
-    moment(i, j) = 0;
-    for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
-      moment(i, j) +=
-          vandermonde(neighbor, i) * vandermonde(neighbor, j) * phi(neighbor);
+    for (int i = 0; i < POLY_SIZE; i++)
+      for (int j = 0; j < POLY_SIZE; j++)
+      {
+        moment(i, j) = 0;
+        for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
+          moment(i, j) += vandermonde(neighbor, i) * vandermonde(neighbor, j) *
+                          phi(neighbor);
+      }
   }
 
-  KOKKOS_FUNCTION void
-  coefficientsComputation(int const neighbor, LocalPhi const &phi,
-                          LocalVandermonde const &vandermonde,
-                          LocalMoment const &moment,
-                          LocalCoefficients &coefficients) const
+  KOKKOS_FUNCTION void coefficientsComputation(
+      LocalPhi const &phi, LocalVandermonde const &vandermonde,
+      LocalMoment const &moment, LocalCoefficients &coefficients) const
   {
-    coefficients(neighbor) = 0;
-    for (int i = 0; i < POLY_SIZE; i++)
-      coefficients(neighbor) +=
-          moment(0, i) * vandermonde(neighbor, i) * phi(neighbor);
+    for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
+    {
+      coefficients(neighbor) = 0;
+      for (int i = 0; i < POLY_SIZE; i++)
+        coefficients(neighbor) +=
+            moment(0, i) * vandermonde(neighbor, i) * phi(neighbor);
+    }
   }
 
 public:
@@ -193,21 +199,17 @@ public:
 
     // We first change the origin of the evaluation to be at the target point.
     // This lets us use p(0) which is [1 0 ... 0].
-    for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
-      sourcePointsRecentering(neighbor, target_point, source_points);
+    sourcePointsRecentering(target_point, source_points);
 
     // This computes PHI given the source points (radius is computed inside)
     phiComputation(source_points, phi);
 
     // This builds the Vandermonde (P) matrix
-    for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
-      vandermondeComputation(neighbor, source_points, vandermonde);
+    vandermondeComputation(source_points, vandermonde);
 
     // We then create what is called the moment matrix, which is P^T.PHI.P. By
     // construction, it is symmetric.
-    for (int i = 0; i < POLY_SIZE; i++)
-      for (int j = 0; j < POLY_SIZE; j++)
-        momentComputation(i, j, phi, vandermonde, moment);
+    momentComputation(phi, vandermonde, moment);
 
     // We need the inverse of P^T.PHI.P, and because it is symmetric, we can use
     // the symmetric SVD algorithm to get it.
@@ -215,8 +217,7 @@ public:
     // Now, the moment has [P^T.PHI.P]^-1
 
     // Finally, the result is produced by computing p(0).[P^T.PHI.P]^-1.P^T.PHI
-    for (int neighbor = 0; neighbor < _num_neighbors; neighbor++)
-      coefficientsComputation(neighbor, phi, vandermonde, moment, coefficients);
+    coefficientsComputation(phi, vandermonde, moment, coefficients);
   }
 
   Kokkos::TeamPolicy<ExecutionSpace>
