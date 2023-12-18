@@ -47,20 +47,14 @@ private:
   using UnmanagedView =
       Kokkos::View<T, ScratchMemorySpace, Kokkos::MemoryUnmanaged>;
 
-  using Phi = UnmanagedView<CoefficientsType **>;
-  using Vandermonde = UnmanagedView<CoefficientsType **[POLY_SIZE]>;
-  using Moment = UnmanagedView<CoefficientsType *[POLY_SIZE][POLY_SIZE]>;
-  using SVDDiag = UnmanagedView<CoefficientsType *[POLY_SIZE]>;
-  using SVDUnit = UnmanagedView<CoefficientsType *[POLY_SIZE][POLY_SIZE]>;
-
   using Coefficients = Kokkos::View<CoefficientsType **, MemorySpace>;
 
   using LocalSourcePoints = Kokkos::Subview<SourcePoints, int, Kokkos::ALL_t>;
-  using LocalPhi = Kokkos::Subview<Phi, int, Kokkos::ALL_t>;
-  using LocalVandermonde =
-      Kokkos::Subview<Vandermonde, int, Kokkos::ALL_t, Kokkos::ALL_t>;
-  using LocalMoment =
-      Kokkos::Subview<Moment, int, Kokkos::ALL_t, Kokkos::ALL_t>;
+  using LocalPhi = UnmanagedView<CoefficientsType *>;
+  using LocalVandermonde = UnmanagedView<CoefficientsType *[POLY_SIZE]>;
+  using LocalMoment = UnmanagedView<CoefficientsType[POLY_SIZE][POLY_SIZE]>;
+  using LocalSVDDiag = UnmanagedView<CoefficientsType[POLY_SIZE]>;
+  using LocalSVDUnit = UnmanagedView<CoefficientsType[POLY_SIZE][POLY_SIZE]>;
   using LocalCoefficients = Kokkos::Subview<Coefficients, int, Kokkos::ALL_t>;
 
 public:
@@ -152,11 +146,11 @@ public:
   std::size_t team_shmem_size(int const team_size) const
   {
     std::size_t val = 0;
-    val += Phi::shmem_size(team_size, _num_neighbors);
-    val += Vandermonde::shmem_size(team_size, _num_neighbors);
-    val += Moment::shmem_size(team_size);
-    val += SVDDiag::shmem_size(team_size);
-    val += SVDUnit::shmem_size(team_size);
+    val += team_size * LocalPhi::shmem_size(_num_neighbors);
+    val += team_size * LocalVandermonde::shmem_size(_num_neighbors);
+    val += team_size * LocalMoment::shmem_size();
+    val += team_size * LocalSVDDiag::shmem_size();
+    val += team_size * LocalSVDUnit::shmem_size();
     return val;
   }
 
@@ -165,27 +159,19 @@ public:
   {
     int const rank = member.team_rank();
     int const size = member.team_size();
-    auto const &scratch = member.team_scratch(0);
+    auto const &scratch = member.thread_scratch(0);
 
     int target = member.league_rank() * size + rank;
     if (target >= _num_targets)
       return;
 
-    Phi team_phi(scratch, size, _num_neighbors);
-    Vandermonde team_vandermonde(scratch, size, _num_neighbors);
-    Moment team_moment(scratch, size);
-    SVDDiag team_svd_diag(scratch, size);
-    SVDUnit team_svd_unit(scratch, size);
-
     auto target_point = TargetAccess::get(_target_points, target);
     auto source_points = Kokkos::subview(_source_points, target, Kokkos::ALL);
-    auto phi = Kokkos::subview(team_phi, rank, Kokkos::ALL);
-    auto vandermonde =
-        Kokkos::subview(team_vandermonde, rank, Kokkos::ALL, Kokkos::ALL);
-    auto moment = Kokkos::subview(team_moment, rank, Kokkos::ALL, Kokkos::ALL);
-    auto svd_diag = Kokkos::subview(team_svd_diag, rank, Kokkos::ALL);
-    auto svd_unit =
-        Kokkos::subview(team_svd_unit, rank, Kokkos::ALL, Kokkos::ALL);
+    LocalPhi phi(scratch, _num_neighbors);
+    LocalVandermonde vandermonde(scratch, _num_neighbors);
+    LocalMoment moment(scratch);
+    LocalSVDDiag svd_diag(scratch);
+    LocalSVDUnit svd_unit(scratch);
     auto coefficients = Kokkos::subview(_coefficients, target, Kokkos::ALL);
 
     // The goal is to compute the following line vector for each target point:
