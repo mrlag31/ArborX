@@ -51,10 +51,10 @@ private:
 
   using LocalSourcePoints = Kokkos::Subview<SourcePoints, int, Kokkos::ALL_t>;
   using LocalPhi = UnmanagedView<CoefficientsType *>;
-  using LocalVandermonde = UnmanagedView<CoefficientsType *[POLY_SIZE]>;
-  using LocalMoment = UnmanagedView<CoefficientsType[POLY_SIZE][POLY_SIZE]>;
-  using LocalSVDDiag = UnmanagedView<CoefficientsType[POLY_SIZE]>;
-  using LocalSVDUnit = UnmanagedView<CoefficientsType[POLY_SIZE][POLY_SIZE]>;
+  using LocalVandermonde = UnmanagedView<CoefficientsType **>;
+  using LocalMoment = UnmanagedView<CoefficientsType **>;
+  using LocalSVDDiag = UnmanagedView<CoefficientsType *>;
+  using LocalSVDUnit = UnmanagedView<CoefficientsType **>;
   using LocalCoefficients = Kokkos::Subview<Coefficients, int, Kokkos::ALL_t>;
 
 public:
@@ -146,12 +146,12 @@ public:
   std::size_t team_shmem_size(int const team_size) const
   {
     std::size_t val = 0;
-    val += team_size * LocalPhi::shmem_size(_num_neighbors);
-    val += team_size * LocalVandermonde::shmem_size(_num_neighbors);
-    val += team_size * LocalMoment::shmem_size();
-    val += team_size * LocalSVDDiag::shmem_size();
-    val += team_size * LocalSVDUnit::shmem_size();
-    return val;
+    val += LocalPhi::shmem_size(_num_neighbors);
+    val += LocalVandermonde::shmem_size(_num_neighbors, POLY_SIZE);
+    val += LocalMoment::shmem_size(POLY_SIZE, POLY_SIZE);
+    val += LocalSVDDiag::shmem_size(POLY_SIZE);
+    val += LocalSVDUnit::shmem_size(POLY_SIZE, POLY_SIZE);
+    return team_size * val;
   }
 
   template <typename TeamMember>
@@ -168,10 +168,10 @@ public:
     auto target_point = TargetAccess::get(_target_points, target);
     auto source_points = Kokkos::subview(_source_points, target, Kokkos::ALL);
     LocalPhi phi(scratch, _num_neighbors);
-    LocalVandermonde vandermonde(scratch, _num_neighbors);
-    LocalMoment moment(scratch);
-    LocalSVDDiag svd_diag(scratch);
-    LocalSVDUnit svd_unit(scratch);
+    LocalVandermonde vandermonde(scratch, _num_neighbors, POLY_SIZE);
+    LocalMoment moment(scratch, POLY_SIZE, POLY_SIZE);
+    LocalSVDDiag svd_diag(scratch, POLY_SIZE);
+    LocalSVDUnit svd_unit(scratch, POLY_SIZE, POLY_SIZE);
     auto coefficients = Kokkos::subview(_coefficients, target, Kokkos::ALL);
 
     // The goal is to compute the following line vector for each target point:
