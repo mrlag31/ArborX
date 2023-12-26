@@ -268,6 +268,7 @@ add_test(NAME ArborX_Test_InterpMovingLeastSquares COMMAND ArborX_Test_InterpMov
 if(ARBORX_ENABLE_MPI)
   add_executable(ArborX_Test_InterpDistributedMovingLeastSquares.exe
     tstInterpDetailsDistValuesDist.cpp
+    tstInterpDistributedMovingLeastSquares.cpp
     utf_main.cpp)
   target_link_libraries(ArborX_Test_InterpDistributedMovingLeastSquares.exe PRIVATE ArborX Boost::unit_test_framework)
   target_compile_definitions(ArborX_Test_InterpDistributedMovingLeastSquares.exe PRIVATE BOOST_TEST_DYN_LINK ARBORX_MPI_UNIT_TEST)

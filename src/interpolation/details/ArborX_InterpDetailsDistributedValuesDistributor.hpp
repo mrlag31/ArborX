@@ -235,6 +235,10 @@ public:
         });
   }
 
+  DistributedValuesDistributor()
+      : _distributor(nullptr)
+  {}
+
 private:
   std::shared_ptr<MPI_Comm> _comm;
   Kokkos::View<int *, MemorySpace> _send_indices;
