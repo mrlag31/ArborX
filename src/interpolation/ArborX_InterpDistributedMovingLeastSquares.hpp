@@ -52,19 +52,6 @@ struct DMLSLocalPointsKernel
   }
 };
 
-template <typename SourceLocalView, typename SourceView>
-struct DMLSLocalToViewKernel
-{
-  SourceLocalView source_local;
-  SourceView source_view;
-  int num_neighbors;
-
-  KOKKOS_FUNCTION void operator()(int const i, int const j) const
-  {
-    source_view(i, j) = source_local(i * num_neighbors + j);
-  }
-};
-
 } // namespace ArborX::Interpolation::Details
 
 namespace ArborX
@@ -160,8 +147,12 @@ public:
     // KOKKOS_ASSERT(0 < _num_neighbors && _num_neighbors <= _source_size);
 
     // Search for neighbors and get the arranged source points
-    auto source_view =
+    auto source_local =
         searchNeighbors(comm, space, source_access, target_access);
+
+    Kokkos::View<SourcePoint **, Kokkos::LayoutRight, MemorySpace,
+                 Kokkos::MemoryUnmanaged>
+        source_view(source_local.data(), _num_targets, _num_neighbors);
 
     // Compute the moving least squares coefficients
     _coeffs = Details::movingLeastSquaresCoefficients<CRBFunc, PolynomialDegree,
@@ -275,18 +266,10 @@ private:
             space, Kokkos::WithoutInitializing,
             "ArborX::DistributedMovingLeastSquares::source_local"),
         _num_targets * _num_neighbors);
-    Kokkos::View<SourcePoint **, MemorySpace> source_view(
-        Kokkos::view_alloc(
-            space, Kokkos::WithoutInitializing,
-            "ArborX::DistributedMovingLeastSquares::source_view"),
-        _num_targets, _num_neighbors);
 
     // Prepare kernels
     Details::DMLSLocalPointsKernel<SourceAccess, decltype(source_local)>
         local_kernel{source_access, source_local};
-    Details::DMLSLocalToViewKernel<decltype(source_local),
-                                   decltype(source_view)>
-        view_kernel{source_local, source_view, _num_neighbors};
 
     Kokkos::parallel_for("ArborX::DistributedMovingLeastSquares::local_kernel",
                          Kokkos::RangePolicy<ExecutionSpace>(
@@ -295,12 +278,7 @@ private:
 
     _distributor.distribute(space, source_local);
 
-    Kokkos::parallel_for("ArborX::DistributedMovingLeastSquares::view_kernel",
-                         Kokkos::MDRangePolicy<ExecutionSpace, Kokkos::Rank<2>>(
-                             space, {0, 0}, {_num_targets, _num_neighbors}),
-                         view_kernel);
-
-    return source_view;
+    return source_local;
   }
 
   Kokkos::View<FloatingCalculationType **, MemorySpace> _coeffs;
