@@ -83,7 +83,7 @@ struct AccessTraits<Interpolation::Details::DMLSPredicateWrapper<TargetAccess>,
 
   KOKKOS_FUNCTION static auto get(Self const &tp, int const i)
   {
-    return attach(nearest(tp.target_access(i), tp.num_neighbors), i);
+    return nearest(tp.target_access(i), tp.num_neighbors);
   }
 
   using memory_space = typename TargetAccess::memory_space;

@@ -60,7 +60,7 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(distributed_moving_least_squares, DeviceType,
   dmls0.interpolate(space, srcv0, eval0);
   ARBORX_MDVIEW_TEST_TOL(eval0, tgtv0, Kokkos::Experimental::epsilon_v<float>);
 
-  // Case 2: f(x, y) = xy + x, 8 neighbors, quad
+  // Case 2: f(x, y) = xy + 4x, 8 neighbors, quad
   //  ^
   //  |
   //  S   S   S   ...
@@ -80,7 +80,7 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(distributed_moving_least_squares, DeviceType,
   Kokkos::parallel_for(
       "for", Kokkos::RangePolicy<ExecutionSpace>(space, 0, 1),
       KOKKOS_LAMBDA(int const) {
-        auto f = [](const point1 &p) { return p[0] * p[1] + p[0]; };
+        auto f = [](const point1 &p) { return p[0] * p[1] + 4 * p[0]; };
 
         srcp1(0) = {{2. * local_source_id_1, 2, 0}};
         srcp1(1) = {{2. * local_source_id_1, 0, 0}};
@@ -153,7 +153,7 @@ BOOST_AUTO_TEST_CASE_TEMPLATE(distributed_moving_least_squares_edge_cases,
   Kokkos::parallel_for(
       "for", Kokkos::RangePolicy<ExecutionSpace>(space, 0, 1),
       KOKKOS_LAMBDA(int const) {
-        auto f = [](const point1 &p) { return p[0] * p[1] + p[0]; };
+        auto f = [](const point1 &p) { return p[0] * p[1] + 4 * p[0]; };
 
         srcp1(0) = {{2. * local_source_id_1, 2, 0}};
         srcp1(1) = {{2. * local_source_id_1, 0, 0}};
