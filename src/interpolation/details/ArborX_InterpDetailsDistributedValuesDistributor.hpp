@@ -77,6 +77,8 @@ public:
                                IndicesAndRanks const &indices_and_ranks)
       : _distributor(nullptr)
   {
+    namespace KokkosExt = ArborX::Details::KokkosExt;
+
     auto guard =
         Kokkos::Profiling::ScopedRegion("ArborX::DistributedValuesDistributor");
 
@@ -125,8 +127,7 @@ public:
         Kokkos::view_alloc(space, Kokkos::WithoutInitializing,
                            "ArborX::DistributedValuesDistributor::src_data"),
         data_len);
-    DVDKernel1<decltype(dst_ranks), decltype(src_data),
-               std::decay_t<decltype(indices_and_ranks)>>
+    DVDKernel1<decltype(dst_ranks), decltype(src_data), IndicesAndRanks>
         kernel1{dst_ranks, src_data, indices_and_ranks, rank};
     Kokkos::parallel_for(
         "ArborX::DistributedValuesDistributor::prepare_first_transfer",

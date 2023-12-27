@@ -110,6 +110,8 @@ public:
     auto guard = Kokkos::Profiling::ScopedRegion(
         "ArborX::DistributedMovingLeastSquares");
 
+    namespace KokkosExt = ArborX::Details::KokkosExt;
+
     static_assert(
         KokkosExt::is_accessible_from<MemorySpace, ExecutionSpace>::value,
         "Memory space must be accessible from the execution space");
@@ -175,6 +177,8 @@ public:
   {
     auto guard = Kokkos::Profiling::ScopedRegion(
         "ArborX::DistributedMovingLeastSquares::interpolate");
+
+    namespace KokkosExt = ArborX::Details::KokkosExt;
 
     static_assert(
         KokkosExt::is_accessible_from<MemorySpace, ExecutionSpace>::value,
