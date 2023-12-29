@@ -142,7 +142,7 @@ void mls_example(int source_num_points, int target_num_points,
       target_num_points);
   Kokkos::View<double *, MemorySpace> approx_values(
       Kokkos::view_alloc(Kokkos::WithoutInitializing, "Example::approx_values"),
-      0);
+      target_num_points);
 
   filledBoxEven(source_points);
   filledBoxEven(target_points);
