@@ -70,7 +70,7 @@ public:
   template <typename TeamMember>
   KOKKOS_FUNCTION void operator()(TeamMember const &member) const
   {
-    auto const &scratch = member.thread_scratch(0);
+    auto const &scratch = member.thread_scratch(1);
 
     int target = member.league_rank() * member.team_size() + member.team_rank();
     if (target >= _num_targets)
@@ -121,19 +121,19 @@ public:
   makePolicy(ExecutionSpace const &space) const
   {
     Kokkos::TeamPolicy<ExecutionSpace> dummy_policy(space, 1, Kokkos::AUTO);
-    dummy_policy.set_scratch_size(0, Kokkos::PerThread(perTargetMem()));
+    dummy_policy.set_scratch_size(1, Kokkos::PerThread(perTargetMem()));
     int team_size =
         dummy_policy.team_size_recommended(*this, Kokkos::ParallelForTag{});
     if (team_size != 0)
     {
       int league_size = (_num_targets + team_size - 1) / team_size;
       return Kokkos::TeamPolicy<ExecutionSpace>(space, league_size, team_size)
-          .set_scratch_size(0, Kokkos::PerThread(perTargetMem()));
+          .set_scratch_size(1, Kokkos::PerThread(perTargetMem()));
     }
     else
     {
       return Kokkos::TeamPolicy<ExecutionSpace>(space, _num_targets, 1, 1)
-          .set_scratch_size(0, Kokkos::PerTeam(perTargetMem()));
+          .set_scratch_size(1, Kokkos::PerTeam(perTargetMem()));
     }
   }
 
