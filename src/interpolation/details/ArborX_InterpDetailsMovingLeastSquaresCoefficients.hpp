@@ -85,6 +85,12 @@ public:
     LocalSVDUnit svd_unit(scratch);
     auto coefficients = Kokkos::subview(_coefficients, target, Kokkos::ALL);
 
+    if (target == 0 || target == 32000)
+    {
+      printf("%d, %p, %p\n", target, &phi(0), &phi(5));
+      phi(0) = 50.;
+    }
+
     // The goal is to compute the following line vector for each target point:
     // p(x).[P^T.PHI.P]^-1.P^T.PHI
     // Where:
@@ -96,25 +102,25 @@ public:
 
     // We first change the origin of the evaluation to be at the target point.
     // This lets us use p(0) which is [1 0 ... 0].
-    sourceRecentering(target_point, source_points);
+    // sourceRecentering(target_point, source_points);
 
     // This computes PHI given the source points (radius is computed inside)
-    phiComputation(source_points, phi);
+    // phiComputation(source_points, phi);
 
     // This builds the Vandermonde (P) matrix
-    vandermondeComputation(source_points, vandermonde);
+    // vandermondeComputation(source_points, vandermonde);
 
     // We then create what is called the moment matrix, which is P^T.PHI.P. By
     // construction, it is symmetric.
-    momentComputation(phi, vandermonde, moment);
+    // momentComputation(phi, vandermonde, moment);
 
     // We need the inverse of P^T.PHI.P, and because it is symmetric, we can use
     // the symmetric SVD algorithm to get it.
-    symmetricPseudoInverseSVDKernel(moment, svd_diag, svd_unit);
+    // symmetricPseudoInverseSVDKernel(moment, svd_diag, svd_unit);
     // Now, the moment has [P^T.PHI.P]^-1
 
     // Finally, the result is produced by computing p(0).[P^T.PHI.P]^-1.P^T.PHI
-    coefficientsComputation(phi, vandermonde, moment, coefficients);
+    // coefficientsComputation(phi, vandermonde, moment, coefficients);
   }
 
   Kokkos::TeamPolicy<ExecutionSpace>
